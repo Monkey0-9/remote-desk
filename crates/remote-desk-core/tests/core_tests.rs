@@ -123,3 +123,28 @@ fn test_invalid_state_transition() {
     let err = sm.transition(SessionEvent::ApprovalGranted);
     assert!(err.is_err());
 }
+
+#[test]
+fn test_user_rejection_prevents_input_injection() {
+    let mut sm = SessionStateMachine::new();
+    sm.transition(SessionEvent::InitiateHandshake {
+        peer_id: "rd-9999-8888".to_string(),
+    })
+    .unwrap();
+    sm.transition(SessionEvent::SasGenerated {
+        sas_code: "123-456".to_string(),
+    })
+    .unwrap();
+
+    // User explicitly denies pairing request on host
+    let action = sm.transition(SessionEvent::ApprovalDenied).unwrap();
+    assert_eq!(
+        action,
+        SessionAction::CloseTransport {
+            reason: "Permission denied".to_string()
+        }
+    );
+    assert!(matches!(sm.state(), SessionState::Closed { .. }));
+    assert!(!sm.is_active());
+    assert!(!sm.can_inject_input());
+}

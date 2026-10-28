@@ -183,3 +183,18 @@ fn test_payload_length_mismatch_rejected() {
     let err = unpack_frame(corrupted).unwrap_err();
     assert!(matches!(err, ProtoError::PayloadLengthMismatch { .. }));
 }
+
+#[test]
+fn test_fuzz_arbitrary_garbage_bytes_never_panics() {
+    // Generate pseudo-random permutations of corrupted byte streams
+    let mut state: u32 = 0x12345678;
+    for len in 0..128 {
+        let mut buf = vec![0u8; len];
+        for b in buf.iter_mut() {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            *b = (state >> 24) as u8;
+        }
+        // Fuzz deserializer: must cleanly return Err, never panic
+        let _ = unpack_frame(&buf);
+    }
+}
