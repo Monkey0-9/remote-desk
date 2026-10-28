@@ -3,6 +3,7 @@ members = [
     "crates/remote-desk-proto",
     "crates/remote-desk-core",
     "crates/remote-desk-linux",
+    "crates/remote-desk-windows",
     "crates/remote-desk-net",
     "crates/remote-desk-signal",
     "crates/remote-desk-bench",

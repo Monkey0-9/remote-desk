@@ -1,0 +1,23 @@
+[Unit]
+Description=Remote-Desk Host Screen Streaming & Input Service
+Documentation=https://github.com/remote-desk/remote-desk
+After=network.target sound.target pipewire.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/remote-desk-host --session-portal
+Restart=on-failure
+RestartSec=3s
+
+# Security Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=default.target

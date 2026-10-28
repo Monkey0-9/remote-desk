@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  signal:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.signal
+    container_name: remote-desk-signal
+    restart: unless-stopped
+    ports:
+      - "4443:4443"
+    environment:
+      - RUST_LOG=info
+      - BIND_ADDR=0.0.0.0:4443
+    networks:
+      - remotedesk-net
+
+  turn:
+    image: coturn/coturn:latest
+    container_name: remote-desk-turn
+    restart: unless-stopped
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49152-49160:49152-49160/udp"
+    volumes:
+      - ./coturn.conf:/etc/coturn/turnserver.conf:ro
+    networks:
+      - remotedesk-net
+
+networks:
+  remotedesk-net:
+    driver: bridge

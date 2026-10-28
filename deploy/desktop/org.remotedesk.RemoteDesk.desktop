@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Remote-Desk
+GenericName=Remote Desktop Client
+Comment=Privacy-first, low-latency remote desktop and controller
+Exec=remote-desk %U
+Icon=org.remotedesk.RemoteDesk
+Terminal=false
+Type=Application
+Categories=Network;RemoteAccess;Utility;
+Keywords=remote;desktop;rdp;vnc;webrtc;screen;control;
+StartupNotify=true
+MimeType=x-scheme-handler/remotedesk;
+X-Purism-FormFactor=Workstation;Mobile;

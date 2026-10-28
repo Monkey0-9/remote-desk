@@ -1,0 +1,24 @@
+# Multi-stage minimal production container for Remote-Desk Rendezvous Signaling Server
+FROM rust:1.80-slim as builder
+
+WORKDIR /usr/src/remote-desk
+COPY . .
+
+RUN cargo build --release -p remote-desk-signal
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Non-root unprivileged service user
+RUN useradd -u 10001 -m -s /sbin/nologin remotedesk
+USER remotedesk
+
+COPY --from=builder /usr/src/remote-desk/target/release/remote-desk-signal /usr/local/bin/remote-desk-signal
+
+EXPOSE 4443 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD /usr/local/bin/remote-desk-signal --health-check || exit 1
+
+ENTRYPOINT ["/usr/local/bin/remote-desk-signal"]
