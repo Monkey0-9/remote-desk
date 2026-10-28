@@ -44,6 +44,17 @@ impl DeviceIdentity {
         self.signing_key.verifying_key().to_bytes()
     }
 
+    /// Export public key as lowercase 64-character hexadecimal string
+    pub fn public_key_hex(&self) -> String {
+        let bytes = self.public_key_bytes();
+        let mut s = String::with_capacity(64);
+        for &b in &bytes {
+            use std::fmt::Write;
+            write!(&mut s, "{:02x}", b).unwrap();
+        }
+        s
+    }
+
     /// Derive stable 9-digit human-friendly Device ID locator (e.g. "rd-4928-1029")
     pub fn device_id(&self) -> String {
         Self::derive_device_id(&self.verifying_key())

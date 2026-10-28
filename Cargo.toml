@@ -3,14 +3,17 @@ members = [
     "crates/remote-desk-proto",
     "crates/remote-desk-core",
     "crates/remote-desk-linux",
+    "crates/remote-desk-net",
+    "crates/remote-desk-signal",
+    "crates/remote-desk-bench",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Remote-Desk Contributors"]
 license = "MIT OR Apache-2.0"
+authors = ["Remote-Desk Contributors"]
 repository = "https://github.com/remote-desk/remote-desk"
 
 [workspace.dependencies]

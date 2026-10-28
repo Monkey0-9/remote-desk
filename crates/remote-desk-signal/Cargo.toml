@@ -1,0 +1,18 @@
+[package]
+name = "remote-desk-signal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+remote-desk-net = { path = "../remote-desk-net" }
+remote-desk-core = { path = "../remote-desk-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]

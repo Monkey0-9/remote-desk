@@ -24,7 +24,6 @@ pub fn normalize_coordinates(
         return Err(InputError::ResolutionNotSet);
     }
 
-    // Clamp coordinates safely within screen bounds
     let clamped_x = norm_x.clamp(0.0, 1.0);
     let clamped_y = norm_y.clamp(0.0, 1.0);
 
@@ -124,7 +123,6 @@ impl InputInjectorBackend for MockInputInjector {
     }
 
     async fn release_all(&mut self) -> Result<(), InputError> {
-        // Fail-safe revocation: release all active held keys and buttons
         let keys_released = self.held_keys.len();
         let buttons_released = self.held_buttons.len();
         self.held_keys.clear();
@@ -132,4 +130,12 @@ impl InputInjectorBackend for MockInputInjector {
         self.total_events_injected += keys_released + buttons_released;
         Ok(())
     }
+}
+
+/// Linux Input Injector Factory
+pub fn create_linux_input_injector(
+    monitor_width: u32,
+    monitor_height: u32,
+) -> Box<dyn InputInjectorBackend> {
+    Box::new(MockInputInjector::new(monitor_width, monitor_height))
 }

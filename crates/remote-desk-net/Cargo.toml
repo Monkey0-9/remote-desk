@@ -1,0 +1,21 @@
+[package]
+name = "remote-desk-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+remote-desk-proto = { path = "../remote-desk-proto" }
+remote-desk-core = { path = "../remote-desk-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]

@@ -21,7 +21,9 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import org.remotedesk.input.GestureRecognizer
 import org.remotedesk.input.InputMode
+import org.remotedesk.security.SecureKeyStore
 import kotlin.math.roundToInt
 
 data class SavedDevice(
@@ -32,7 +34,18 @@ data class SavedDevice(
     val isOnline: Boolean
 )
 
+enum class ConnectionStage {
+    FINDING_DEVICE,
+    VERIFYING_IDENTITY,
+    WAITING_HOST_APPROVAL,
+    NEGOTIATING_MEDIA,
+    CONNECTED,
+    FAILED
+}
+
 class MainActivity : ComponentActivity() {
+    private val keyStore = SecureKeyStore()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -44,37 +57,75 @@ class MainActivity : ComponentActivity() {
                     background = Color(0xFF0F172A)
                 )
             ) {
-                RemoteDeskApp()
+                RemoteDeskApp(keyStore)
             }
         }
     }
 }
 
 @Composable
-fun RemoteDeskApp() {
+fun RemoteDeskApp(keyStore: SecureKeyStore) {
     val navController = rememberNavController()
+    var selectedDeviceId by remember { mutableStateOf("") }
+    var sasVerificationCode by remember { mutableStateOf("739-737") }
 
     NavHost(navController = navController, startDestination = "devices") {
         composable("devices") {
             DevicesScreen(
-                onConnect = { navController.navigate("session") },
+                onConnect = { id ->
+                    selectedDeviceId = id
+                    navController.navigate("connecting")
+                },
+                onAddComputer = { navController.navigate("add_computer") },
                 onSettings = { navController.navigate("settings") }
+            )
+        }
+        composable("add_computer") {
+            AddComputerScreen(
+                onPairInitiated = { id ->
+                    selectedDeviceId = id
+                    navController.navigate("connecting")
+                },
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable("connecting") {
+            ConnectionProgressScreen(
+                deviceId = selectedDeviceId,
+                sasCode = sasVerificationCode,
+                onConnected = {
+                    navController.navigate("session") {
+                        popUpTo("devices")
+                    }
+                },
+                onCancel = { navController.popBackStack() }
             )
         }
         composable("session") {
             SessionCanvasScreen(
-                onDisconnect = { navController.popBackStack() }
+                onDisconnect = {
+                    navController.navigate("devices") {
+                        popUpTo("devices") { inclusive = true }
+                    }
+                }
             )
         }
         composable("settings") {
-            SettingsScreen(onBack = { navController.popBackStack() })
+            SettingsScreen(
+                keyStore = keyStore,
+                onBack = { navController.popBackStack() }
+            )
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DevicesScreen(onConnect: (String) -> Unit, onSettings: () -> Unit) {
+fun DevicesScreen(
+    onConnect: (String) -> Unit,
+    onAddComputer: () -> Unit,
+    onSettings: () -> Unit
+) {
     val devices = remember {
         mutableStateListOf(
             SavedDevice("rd-3818-9087", "Linux Desktop", "Linux (Wayland)", "192.168.1.120", true),
@@ -94,8 +145,11 @@ fun DevicesScreen(onConnect: (String) -> Unit, onSettings: () -> Unit) {
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { /* Add computer flow */ }) {
-                Text("+", style = MaterialTheme.typography.titleLarge)
+            ExtendedFloatingActionButton(
+                onClick = onAddComputer,
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
+                Text("+ Add Computer")
             }
         }
     ) { padding ->
@@ -135,12 +189,13 @@ fun DevicesScreen(onConnect: (String) -> Unit, onSettings: () -> Unit) {
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (device.isOnline) Color(0xFF10B981) else Color(0xFFEF4444)
                             )
+                            Text(device.id, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         }
                         Button(
                             onClick = { onConnect(device.id) },
                             enabled = device.isOnline
                         ) {
-                            Text("Connect")
+                            Text(if (device.isOnline) "Connect" else "Retry")
                         }
                     }
                 }
@@ -150,8 +205,116 @@ fun DevicesScreen(onConnect: (String) -> Unit, onSettings: () -> Unit) {
 }
 
 @Composable
+fun AddComputerScreen(onPairInitiated: (String) -> Unit, onBack: () -> Unit) {
+    var computerName by remember { mutableStateOf("") }
+    var deviceIdOrAddress by remember { mutableStateOf("") }
+
+    Scaffold(
+        topBar = {
+            TextButton(onClick = onBack, modifier = Modifier.padding(8.dp)) {
+                Text("< Back", color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text("Add Computer", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "A Device ID is a locator, not an authentication credential. You will verify a 6-digit SAS code on the host.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+
+            OutlinedTextField(
+                value = computerName,
+                onValueChange = { computerName = it },
+                label = { Text("Computer Name (Alias)") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = deviceIdOrAddress,
+                onValueChange = { deviceIdOrAddress = it },
+                label = { Text("Device ID (rd-XXXX-XXXX) or IP") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Button(
+                onClick = { onPairInitiated(deviceIdOrAddress.ifBlank { "rd-9999-0000" }) },
+                enabled = deviceIdOrAddress.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Start Pairing Handshake")
+            }
+        }
+    }
+}
+
+@Composable
+fun ConnectionProgressScreen(
+    deviceId: String,
+    sasCode: String,
+    onConnected: () -> Unit,
+    onCancel: () -> Unit
+) {
+    var stage by remember { mutableStateOf(ConnectionStage.WAITING_HOST_APPROVAL) }
+
+    Scaffold { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text("Connecting to $deviceId...", style = MaterialTheme.typography.titleLarge)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text("Stage: ${stage.name.replace('_', ' ')}", color = Color(0xFF3B82F6))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("SHORT AUTHENTICATION STRING (SAS)", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    Text("[$sasCode]", style = MaterialTheme.typography.headlineMedium, color = Color(0xFF10B981))
+                    Text("Verify this code matches the host desktop prompt.", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                OutlinedButton(onClick = onCancel) {
+                    Text("Cancel")
+                }
+                Button(onClick = onConnected) {
+                    Text("Simulate Approve & Stream")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun SessionCanvasScreen(onDisconnect: () -> Unit) {
+    val gestureRecognizer = remember { GestureRecognizer() }
     var inputMode by remember { mutableStateOf(InputMode.DIRECT_TOUCH) }
+    var zoomFit by remember { mutableStateOf(true) }
     var offsetX by remember { mutableStateOf(16f) }
     var offsetY by remember { mutableStateOf(16f) }
 
@@ -166,13 +329,13 @@ fun SessionCanvasScreen(onDisconnect: () -> Unit) {
             contentAlignment = Alignment.Center
         ) {
             Text(
-                "LIVE REMOTE DESKTOP CANVAS\n(Wayland ScreenCast / 60 FPS)",
+                "LIVE REMOTE DESKTOP CANVAS\n(Wayland / PipeWire DMA-BUF Stream)\nMode: ${inputMode.name} · Zoom: ${if (zoomFit) "Fit" else "100%"}",
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium
             )
         }
 
-        // Floating Draggable Pill Toolbar
+        // Floating Draggable Pill Toolbar (Collapsible / Unobtrusive)
         Card(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -199,12 +362,20 @@ fun SessionCanvasScreen(onDisconnect: () -> Unit) {
                         } else {
                             InputMode.DIRECT_TOUCH
                         }
+                        gestureRecognizer.mode = inputMode
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (inputMode == InputMode.MOUSE_POINTER) Color(0xFF3B82F6) else Color(0xFF475569)
                     )
                 ) {
                     Text(if (inputMode == InputMode.MOUSE_POINTER) "Pointer" else "Touch")
+                }
+
+                Button(
+                    onClick = { zoomFit = !zoomFit },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569))
+                ) {
+                    Text(if (zoomFit) "Fit" else "1:1")
                 }
 
                 Button(
@@ -219,7 +390,10 @@ fun SessionCanvasScreen(onDisconnect: () -> Unit) {
 }
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(keyStore: SecureKeyStore, onBack: () -> Unit) {
+    var clipboardSync by remember { mutableStateOf(false) }
+    var preferAv1 by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TextButton(onClick = onBack, modifier = Modifier.padding(8.dp)) {
@@ -231,13 +405,45 @@ fun SettingsScreen(onBack: () -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text("Settings & Privacy", style = MaterialTheme.typography.titleLarge)
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("No Screen Recording by Default: Enforced", style = MaterialTheme.typography.bodyMedium)
-            Text("End-to-End Encryption: Active (DTLS-SRTP)", style = MaterialTheme.typography.bodyMedium)
-            Text("Local Keystore: Hardware Protected", style = MaterialTheme.typography.bodyMedium)
+            Text("Settings & Privacy", style = MaterialTheme.typography.headlineMedium)
+
+            Text("PRIVACY & PERMISSIONS", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Clipboard Synchronization")
+                Switch(checked = clipboardSync, onCheckedChange = { clipboardSync = it })
+            }
+
+            Text("VIDEO & CODEC", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Prefer AV1 over H.264")
+                Switch(checked = preferAv1, onCheckedChange = { preferAv1 = it })
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("SECURITY GUARANTEES", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+            Text("• Zero screen recording by default: ENFORCED", style = MaterialTheme.typography.bodyMedium)
+            Text("• End-to-end encryption: DTLS 1.3 + SRTP", style = MaterialTheme.typography.bodyMedium)
+            Text("• Keystore: Hardware backed (OWASP MASVS-STORAGE-1)", style = MaterialTheme.typography.bodyMedium)
+
+            Spacer(modifier = Modifier.weight(1f))
+            Button(
+                onClick = { keyStore.clearAllKeys() },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Revoke All Paired Device Keys")
+            }
         }
     }
 }

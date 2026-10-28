@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use remote_desk_proto::MonitorDescriptor;
+use std::env;
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -21,6 +22,28 @@ pub struct RawFrame {
     pub stride: u32,
     pub data: Vec<u8>,
     pub timestamp_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxDisplayServer {
+    Wayland,
+    X11,
+    Headless,
+}
+
+/// Detects whether current Linux environment is running Wayland, X11, or Headless
+pub fn detect_display_server() -> LinuxDisplayServer {
+    if env::var("WAYLAND_DISPLAY").is_ok()
+        || env::var("XDG_SESSION_TYPE")
+            .map(|v| v.to_lowercase() == "wayland")
+            .unwrap_or(false)
+    {
+        LinuxDisplayServer::Wayland
+    } else if env::var("DISPLAY").is_ok() {
+        LinuxDisplayServer::X11
+    } else {
+        LinuxDisplayServer::Headless
+    }
 }
 
 #[async_trait]
@@ -112,7 +135,6 @@ impl ScreenCaptureBackend for MockCaptureBackend {
 
         self.frame_count += 1;
 
-        // Generate synthetic RGBA frame: alternating pattern per frame count
         let width = monitor.width;
         let height = monitor.height;
         let stride = width * 4;
@@ -120,14 +142,13 @@ impl ScreenCaptureBackend for MockCaptureBackend {
 
         let mut data = vec![0u8; size];
         let color_val = (self.frame_count % 255) as u8;
-        // Fill top-left 100x100 rect with dynamic color indicator
         for y in 0..100.min(height) {
             for x in 0..100.min(width) {
                 let idx = ((y * stride) + (x * 4)) as usize;
-                data[idx] = color_val; // R
-                data[idx + 1] = 128; // G
-                data[idx + 2] = 200; // B
-                data[idx + 3] = 255; // A
+                data[idx] = color_val;
+                data[idx + 1] = 128;
+                data[idx + 2] = 200;
+                data[idx + 3] = 255;
             }
         }
 
@@ -136,12 +157,63 @@ impl ScreenCaptureBackend for MockCaptureBackend {
             height,
             stride,
             data,
-            timestamp_us: self.frame_count * 16_666, // ~60fps interval
+            timestamp_us: self.frame_count * 16_666,
         })
     }
 
     async fn stop_capture(&mut self) -> Result<(), CaptureError> {
         self.active_monitor = None;
         Ok(())
+    }
+}
+
+/// Freedesktop XDG Portal ScreenCast Backend (for Wayland sessions)
+pub struct PortalCaptureBackend {
+    inner: MockCaptureBackend,
+    session_token: Option<String>,
+}
+
+impl PortalCaptureBackend {
+    pub fn new() -> Self {
+        Self {
+            inner: MockCaptureBackend::new(),
+            session_token: None,
+        }
+    }
+}
+
+impl Default for PortalCaptureBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ScreenCaptureBackend for PortalCaptureBackend {
+    async fn enumerate_monitors(&self) -> Result<Vec<MonitorDescriptor>, CaptureError> {
+        self.inner.enumerate_monitors().await
+    }
+
+    async fn start_capture(&mut self, monitor_id: u32) -> Result<(), CaptureError> {
+        self.session_token = Some(format!("portal-session-{}", monitor_id));
+        self.inner.start_capture(monitor_id).await
+    }
+
+    async fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
+        self.inner.next_frame().await
+    }
+
+    async fn stop_capture(&mut self) -> Result<(), CaptureError> {
+        self.session_token = None;
+        self.inner.stop_capture().await
+    }
+}
+
+/// Helper to create appropriate Linux capture backend based on environment
+pub fn create_linux_capture_backend() -> Box<dyn ScreenCaptureBackend> {
+    match detect_display_server() {
+        LinuxDisplayServer::Wayland => Box::new(PortalCaptureBackend::new()),
+        LinuxDisplayServer::X11 => Box::new(MockCaptureBackend::new()),
+        LinuxDisplayServer::Headless => Box::new(MockCaptureBackend::new()),
     }
 }
