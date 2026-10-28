@@ -1,0 +1,16 @@
+[package]
+name = "remote-desk-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+remote-desk-proto = { path = "../remote-desk-proto" }
+remote-desk-core = { path = "../remote-desk-core" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
