@@ -1,0 +1,3 @@
+app_identifier("org.remotedesk")
+package_name("org.remotedesk")
+json_key_file("supply-key.json")

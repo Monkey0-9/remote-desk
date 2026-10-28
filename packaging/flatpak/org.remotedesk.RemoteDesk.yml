@@ -1,0 +1,37 @@
+app-id: org.remotedesk.RemoteDesk
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: remote-desk-host
+
+finish-args:
+  # Screen capture via XDG Desktop Portal
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.ScreenCast
+  - --talk-name=org.freedesktop.portal.RemoteDesktop
+  # Network access for WebRTC and signaling
+  - --share=network
+  - --share=ipc
+  # Wayland & X11 display socket access
+  - --socket=wayland
+  - --socket=fallback-x11
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/remote-desk/cargo
+
+modules:
+  - name: remote-desk
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --bin remote-desk-host --bin remote-desk-signal
+      - install -Dm755 target/release/remote-desk-host /app/bin/remote-desk-host
+      - install -Dm755 target/release/remote-desk-signal /app/bin/remote-desk-signal
+      - install -Dm644 packaging/desktop/org.remotedesk.RemoteDesk.desktop /app/share/applications/org.remotedesk.RemoteDesk.desktop
+      - install -Dm644 packaging/flatpak/org.remotedesk.RemoteDesk.metainfo.xml /app/share/metainfo/org.remotedesk.RemoteDesk.metainfo.xml
+    sources:
+      - type: dir
+        path: ../../

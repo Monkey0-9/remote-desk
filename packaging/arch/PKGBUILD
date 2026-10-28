@@ -1,0 +1,30 @@
+# Maintainer: Remote-Desk Contributors <maintainers@remotedesk.org>
+pkgname=remote-desk
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Privacy-first, low-latency remote desktop system"
+arch=('x86_64' 'aarch64')
+url="https://github.com/remote-desk/remote-desk"
+license=('MIT' 'Apache-2.0')
+depends=('pipewire' 'libx11')
+makedepends=('cargo' 'rust')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    cargo build --release --locked --workspace
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    cargo test --release --locked --workspace
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 "target/release/remote-desk-host" "$pkgdir/usr/bin/remote-desk-host"
+    install -Dm755 "target/release/remote-desk-signal" "$pkgdir/usr/bin/remote-desk-signal"
+    install -Dm644 "packaging/systemd/remote-desk.service" "$pkgdir/usr/lib/systemd/system/remote-desk.service"
+    install -Dm644 "packaging/desktop/org.remotedesk.RemoteDesk.desktop" "$pkgdir/usr/share/applications/org.remotedesk.RemoteDesk.desktop"
+}

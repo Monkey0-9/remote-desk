@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product Id="*"
+             Name="Remote-Desk Host"
+             Language="1033"
+             Version="0.1.0.0"
+             Manufacturer="Remote-Desk Contributors"
+             UpgradeCode="9B15F6A8-D72E-47C1-8C9B-983D5941940E">
+
+        <Package InstallerVersion="500"
+                 Compressed="yes"
+                 InstallScope="perMachine"
+                 Description="Privacy-first, low-latency remote desktop host service" />
+
+        <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+        <MediaTemplate EmbedCab="yes" />
+
+        <Feature Id="ProductFeature" Title="RemoteDeskHost" Level="1">
+            <ComponentGroupRef Id="ProductComponents" />
+            <ComponentRef Id="RemoteDeskServiceComponent" />
+        </Feature>
+    </Product>
+
+    <Fragment>
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLFOLDER" Name="Remote-Desk">
+                    <Component Id="RemoteDeskServiceComponent" Guid="A74F4C7E-2894-469E-862E-008F09230537">
+                        <File Id="RemoteDeskHostExe" Source="target\release\remote-desk-host.exe" KeyPath="yes" />
+                        <ServiceInstall Id="ServiceInstaller"
+                                        Type="ownProcess"
+                                        Name="RemoteDeskHostService"
+                                        DisplayName="Remote-Desk Streaming Host"
+                                        Description="Streams desktop video and processes remote controller input"
+                                        Start="auto"
+                                        Account="LocalSystem"
+                                        ErrorControl="normal" />
+                        <ServiceControl Id="StartService"
+                                        Stop="both"
+                                        Remove="uninstall"
+                                        Name="RemoteDeskHostService"
+                                        Wait="yes" />
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+    </Fragment>
+
+    <Fragment>
+        <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+            <!-- Documentation and licenses -->
+            <Component Id="LicenseFile" Guid="C45F4B1E-54A8-43B0-9A74-124E71B20D1A">
+                <File Id="LicenseTxt" Source="docs\spec\roadmap.md" />
+            </Component>
+        </ComponentGroup>
+    </Fragment>
+</Wix>

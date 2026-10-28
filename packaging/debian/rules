@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --workspace
+
+override_dh_auto_install:
+	install -Dm755 target/release/remote-desk-host debian/remote-desk/usr/bin/remote-desk-host
+	install -Dm755 target/release/remote-desk-signal debian/remote-desk/usr/bin/remote-desk-signal
+	install -Dm644 packaging/systemd/remote-desk.service debian/remote-desk/lib/systemd/system/remote-desk.service
+	install -Dm644 packaging/desktop/org.remotedesk.RemoteDesk.desktop debian/remote-desk/usr/share/applications/org.remotedesk.RemoteDesk.desktop

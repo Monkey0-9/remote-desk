@@ -1,0 +1,27 @@
+default_platform(:android)
+
+platform :android do
+  desc "Runs all Android unit and Compose tests"
+  lane :test do
+    gradle(task: "testDebugUnitTest")
+  end
+
+  desc "Build signed production APK & AAB"
+  lane :build_release do
+    gradle(task: "bundleRelease")
+    gradle(task: "assembleRelease")
+  end
+
+  desc "Deploy to Google Play Internal Track"
+  lane :deploy_internal do
+    upload_to_play_store(
+      track: "internal",
+      release_status: "draft"
+    )
+  end
+
+  desc "Build F-Droid compliant reproducible APK"
+  lane :build_fdroid do
+    gradle(task: "assembleFdroidRelease")
+  end
+end

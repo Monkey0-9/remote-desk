@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Remote-Desk
+Comment=Privacy-First Low-Latency Remote Desktop Host
+Exec=remote-desk-host
+Icon=org.remotedesk.RemoteDesk
+Terminal=false
+Type=Application
+Categories=Network;RemoteAccess;Utility;
+Keywords=remote;desktop;webrtc;vnc;rdp;screen;share;
+StartupNotify=true

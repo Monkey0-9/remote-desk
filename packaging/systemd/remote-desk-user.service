@@ -1,0 +1,17 @@
+[Unit]
+Description=Remote-Desk Host Streaming Session (User Session)
+Documentation=https://github.com/remote-desk/remote-desk
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/remote-desk-host --bind 127.0.0.1:4443
+Restart=on-failure
+RestartSec=3s
+
+# User-session constraints
+Slice=app-graphical.slice
+
+[Install]
+WantedBy=graphical-session.target

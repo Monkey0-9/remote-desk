@@ -1,0 +1,17 @@
+Source: remote-desk
+Section: net
+Priority: optional
+Maintainer: Remote-Desk Contributors <maintainers@remotedesk.org>
+Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.75)
+Standards-Version: 4.6.2
+Homepage: https://github.com/remote-desk/remote-desk
+
+Package: remote-desk
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libpipewire-0.3-0, libx11-6
+Description: Privacy-first, low-latency remote desktop system
+ Remote-Desk enables encrypted, high-performance remote desktop streaming and
+ remote input control without relying on centralized third-party servers.
+ .
+ Features Ed25519 identity, SAS mutual verification, Wayland PipeWire
+ capture, and fail-safe stuck-key release.

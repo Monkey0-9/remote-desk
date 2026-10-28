@@ -7,6 +7,7 @@ members = [
     "crates/remote-desk-net",
     "crates/remote-desk-signal",
     "crates/remote-desk-bench",
+    "crates/remote-desk-host",
 ]
 resolver = "2"
 

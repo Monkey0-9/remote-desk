@@ -58,3 +58,14 @@
 | **PW.1** | Design Software Architecture | Layered architecture separating platform-agnostic core from native host capture and client UI. |
 | **PW.4** | Reuse Secure Software | Standard cryptographic libraries (`ed25519-dalek`, `x25519-dalek`, `sha2`, `hmac`). |
 | **RV.1** | Review Software Architecture | Multi-agent review protocol, OpenSpec validation, and loopback verification. |
+
+---
+
+## 5. Milestone Phase 7, 8 & 9 Engineering Verification Register
+
+| Phase & Domain | Requirement IDs | Implementation Control & Deliverable | Automated Verification Reference | Status |
+|---|---|---|---|---|
+| **Phase 7: Windows Host Engine** | `REQ-CAP-003`, `REQ-INP-001` | DXGI Desktop Duplication, Windows Graphics Capture, Win32 `SendInput`, 0..65535 coordinate normalization, fail-safe release. | `crates/remote-desk-windows/tests/windows_tests.rs` | **VERIFIED** |
+| **Phase 8: Worldwide TURN & Host** | `REQ-NET-001`, `REQ-NET-002`, `REQ-NET-003` | ICE candidate priority (host/srflx/relay), TURN fallback, in-memory rendezvous broker, and unified host daemon (`remote-desk-host`). | `crates/remote-desk-host/tests/host_tests.rs`, `crates/remote-desk-signal/tests/signal_tests.rs` | **VERIFIED** |
+| **Phase 9: Production Packaging** | `REQ-SEC-004`, ISO 12207 §6.4.11 | Linux Flatpak, Debian, RPM, Arch, AppImage, systemd services, Windows WiX MSI, Android ProGuard, `SECURITY.md`, Release Runbook. | `packaging/`, `SECURITY.md`, `docs/release-runbook.md`, `docs/deployment-guide.md` | **VERIFIED** |
+
