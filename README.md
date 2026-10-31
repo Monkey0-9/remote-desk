@@ -1,8 +1,6 @@
-<<<<<<< HEAD
-# remote-desk
-A lightweight, privacy-first remote desktop for Linux and Windows, with Android control and secure worldwide connectivity. Features live screen streaming, low-latency input, encrypted peer-to-peer connections, optional relays, secure device pairing, and a clean, familiar UI. Built for speed, minimal resource usage, and no recording by default.
-=======
 # Remote-Desk: High-Performance, Privacy-First Remote Desktop Platform
+
+A lightweight, privacy-first remote desktop for Linux and Windows, with Android control and secure worldwide connectivity. Features live screen streaming, low-latency input, encrypted peer-to-peer connections, optional relays, secure device pairing, and a clean, familiar UI. Built for speed, minimal resource usage, and no recording by default.
 
 [![CI Pipeline](https://github.com/remote-desk/remote-desk/actions/workflows/ci.yml/badge.svg)](https://github.com/remote-desk/remote-desk/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
@@ -153,4 +151,3 @@ For vulnerability disclosure guidelines and security response commitments, revie
 Remote-Desk is dual-licensed under either:
 - **MIT License** ([`LICENSE-MIT`](LICENSE-MIT))
 - **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE))
->>>>>>> b1ad872 (feat(host+windows+pkg): complete Phase 7-9 implementation, Windows engine, host daemon, packaging, and specs)

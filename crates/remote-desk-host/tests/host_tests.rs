@@ -52,8 +52,10 @@ async fn test_host_unattended_mode_auto_approval() {
     let host_identity = DeviceIdentity::generate();
     let client_identity = DeviceIdentity::generate();
 
-    let mut config = HostConfig::default();
-    config.unattended = true;
+    let config = HostConfig {
+        unattended: true,
+        ..Default::default()
+    };
 
     let host = HostService::new_mock(host_identity, config);
 
@@ -79,8 +81,10 @@ async fn test_host_input_processing_and_failsafe_revocation() {
     let host_identity = DeviceIdentity::generate();
     let client_identity = DeviceIdentity::generate();
 
-    let mut config = HostConfig::default();
-    config.unattended = true;
+    let config = HostConfig {
+        unattended: true,
+        ..Default::default()
+    };
 
     let host = HostService::new_mock(host_identity, config);
 

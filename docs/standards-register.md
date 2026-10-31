@@ -13,7 +13,7 @@
 
 | Process Clause | Clause Description | Project Implementation Control | Evidence & Verification Reference |
 |---|---|---|---|
-| **6.4.1** | Business or Mission Analysis | Definition of problem statement, privacy-first tenet, no mandatory cloud database. | `docs/spec/requirements.md` (§1), `openspec/changes/init-remote-desk-core/proposal.md` |
+| **6.4.1** | Business or Mission Analysis | Definition of problem statement, privacy-first tenet, no mandatory cloud database. | `docs/spec/requirements.md` (§1), `openspec/specs/` |
 | **6.4.2** | Stakeholder Needs & Requirements Definition | Reference study of Microsoft Windows App, RustDesk, and GNOME Remote Desktop. | `docs/spec/reference-study.md` (RD-SPEC-REF-002) |
 | **6.4.3** | System Requirements Definition | Formal numbered requirements (`REQ-SYS-*`, `REQ-CAP-*`, `REQ-INP-*`, `REQ-NET-*`, `REQ-UI-*`, `REQ-SEC-*`, `REQ-PERF-*`). | `docs/spec/requirements.md` (RD-SPEC-REQ-001) |
 | **6.4.4** | System Architecture Definition | Modular Cargo workspace: Core, Proto, Linux, Net, Signal, Bench, and Android client. | `docs/spec/architecture.md` (RD-SPEC-ARCH-004) |
