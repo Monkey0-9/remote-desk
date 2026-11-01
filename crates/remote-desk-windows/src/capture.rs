@@ -14,7 +14,7 @@ pub enum WindowsCaptureError {
     DisplayModeChanged,
     #[error("DXGI/Direct3D11 device lost (0x887A0005)")]
     DeviceLost,
-    #[error("DXGI API error: {0}")]
+    #[error("Windows capture API error: {0}")]
     ApiError(String),
 }
 
@@ -35,7 +35,7 @@ pub trait WindowsScreenCaptureBackend: Send + Sync {
     async fn stop_capture(&mut self) -> Result<(), WindowsCaptureError>;
 }
 
-/// Windows Desktop Duplication (IDXGIOutputDuplication) Capture Backend
+/// Windows Desktop Capture Backend
 pub struct DxgiCaptureBackend {
     monitors: Vec<MonitorDescriptor>,
     active_monitor: Option<u32>,
@@ -90,51 +90,31 @@ impl DxgiCaptureBackend {
 
     #[cfg(target_os = "windows")]
     fn new_native() -> Self {
-        use windows_sys::Win32::Graphics::Dxgi::*;
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
         let mut monitors = Vec::new();
         unsafe {
-            let mut factory: *mut IDXGIFactory1 = std::ptr::null_mut();
-            if CreateDXGIFactory1(&IID_IDXGIFactory1, &mut factory as *mut _ as *mut _) == 0 {
-                let mut adapter_idx = 0;
-                let mut adapter: *mut IDXGIAdapter1 = std::ptr::null_mut();
-                while (*factory).EnumAdapters1(adapter_idx, &mut adapter) == 0 {
-                    let mut output_idx = 0;
-                    let mut output: *mut IDXGIOutput = std::ptr::null_mut();
-                    while (*adapter).EnumOutputs(output_idx, &mut output) == 0 {
-                        let mut desc: DXGI_OUTPUT_DESC = std::mem::zeroed();
-                        if (*output).GetDesc(&mut desc) == 0 {
-                            let width = (desc.DesktopCoordinates.right
-                                - desc.DesktopCoordinates.left)
-                                .abs() as u32;
-                            let height = (desc.DesktopCoordinates.bottom
-                                - desc.DesktopCoordinates.top)
-                                .abs() as u32;
-                            monitors.push(MonitorDescriptor {
-                                id: output_idx,
-                                name: format!(r"\\.\DISPLAY{}", output_idx + 1),
-                                x: desc.DesktopCoordinates.left,
-                                y: desc.DesktopCoordinates.top,
-                                width,
-                                height,
-                                refresh_rate: 60,
-                                is_primary: output_idx == 0,
-                            });
-                        }
-                        (*output).Release();
-                        output_idx += 1;
-                    }
-                    (*adapter).Release();
-                    adapter_idx += 1;
-                }
-                (*factory).Release();
+            let width = GetSystemMetrics(SM_CXSCREEN) as u32;
+            let height = GetSystemMetrics(SM_CYSCREEN) as u32;
+
+            if width > 0 && height > 0 {
+                monitors.push(MonitorDescriptor {
+                    id: 0,
+                    name: r"\\.\DISPLAY1 (Primary Screen)".to_string(),
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                    refresh_rate: 60,
+                    is_primary: true,
+                });
             }
         }
 
         if monitors.is_empty() {
             monitors.push(MonitorDescriptor {
                 id: 0,
-                name: r"\\.\DISPLAY1 (Default Windows)".to_string(),
+                name: r"\\.\DISPLAY1 (Default Screen)".to_string(),
                 x: 0,
                 y: 0,
                 width: 1920,
@@ -189,10 +169,7 @@ impl WindowsScreenCaptureBackend for DxgiCaptureBackend {
 
         self.active_monitor = Some(monitor_id);
         self.frame_count = 0;
-        info!(
-            "DXGI Output Duplication initialized on monitor {}",
-            monitor_id
-        );
+        info!("Windows screen capture active on monitor {}", monitor_id);
         Ok(())
     }
 
@@ -215,8 +192,82 @@ impl WindowsScreenCaptureBackend for DxgiCaptureBackend {
         let width = monitor.width;
         let height = monitor.height;
         let stride = width * 4;
-        let size = (stride * height) as usize;
 
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows_sys::Win32::Graphics::Gdi::*;
+            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+            let h_wnd = GetDesktopWindow();
+            let h_dc = GetDC(h_wnd);
+            if !h_dc.is_null() {
+                let mem_dc = CreateCompatibleDC(h_dc);
+                let h_bitmap = CreateCompatibleBitmap(h_dc, width as i32, height as i32);
+                let old_bmp = SelectObject(mem_dc, h_bitmap);
+
+                let blt_res = BitBlt(
+                    mem_dc,
+                    0,
+                    0,
+                    width as i32,
+                    height as i32,
+                    h_dc,
+                    monitor.x,
+                    monitor.y,
+                    SRCCOPY,
+                );
+
+                if blt_res != 0 {
+                    let mut bmi: BITMAPINFO = std::mem::zeroed();
+                    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+                    bmi.bmiHeader.biWidth = width as i32;
+                    bmi.bmiHeader.biHeight = -(height as i32); // Top-down
+                    bmi.bmiHeader.biPlanes = 1;
+                    bmi.bmiHeader.biBitCount = 32;
+                    bmi.bmiHeader.biCompression = BI_RGB;
+
+                    let size = (stride * height) as usize;
+                    let mut data = vec![0u8; size];
+
+                    let get_res = GetDIBits(
+                        mem_dc,
+                        h_bitmap,
+                        0,
+                        height,
+                        data.as_mut_ptr() as *mut _,
+                        &mut bmi,
+                        DIB_RGB_COLORS,
+                    );
+
+                    SelectObject(mem_dc, old_bmp);
+                    DeleteObject(h_bitmap);
+                    DeleteDC(mem_dc);
+                    ReleaseDC(h_wnd, h_dc);
+
+                    if get_res > 0 {
+                        let timestamp_us = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_micros() as u64;
+
+                        return Ok(WindowsRawFrame {
+                            width,
+                            height,
+                            stride,
+                            data,
+                            timestamp_us,
+                        });
+                    }
+                } else {
+                    SelectObject(mem_dc, old_bmp);
+                    DeleteObject(h_bitmap);
+                    DeleteDC(mem_dc);
+                    ReleaseDC(h_wnd, h_dc);
+                }
+            }
+        }
+
+        let size = (stride * height) as usize;
         let mut data = vec![0u8; size];
         let color_val = (self.frame_count % 255) as u8;
         for y in 0..100.min(height) {
@@ -245,7 +296,7 @@ impl WindowsScreenCaptureBackend for DxgiCaptureBackend {
 
     async fn stop_capture(&mut self) -> Result<(), WindowsCaptureError> {
         self.active_monitor = None;
-        debug!("DXGI desktop duplication session released");
+        debug!("Windows screen capture session released");
         Ok(())
     }
 }

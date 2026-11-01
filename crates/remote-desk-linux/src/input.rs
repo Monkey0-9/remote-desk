@@ -132,12 +132,15 @@ impl InputInjectorBackend for MockInputInjector {
     }
 }
 
+use crate::capture::{detect_display_server, LinuxDisplayServer};
+pub use crate::remote_desktop_portal::RemoteDesktopPortalInjector;
 pub use crate::uinput_injector::UinputInjector;
 pub use crate::xtest_injector::XTestInjector;
 
 /// Linux Input Injector Factory
 ///
-/// Prioritizes native Linux `/dev/uinput` injector, falls back to X11 XTest injector,
+/// Prioritizes native Linux `/dev/uinput` injector, attempts Wayland RemoteDesktop portal
+/// session when running in a desktop compositor, falls back to X11 XTest injector,
 /// and finally provides `MockInputInjector` in headless/CI environments.
 pub fn create_linux_input_injector(
     monitor_width: u32,
@@ -145,9 +148,22 @@ pub fn create_linux_input_injector(
 ) -> Box<dyn InputInjectorBackend> {
     if let Ok(uinput) = UinputInjector::new(monitor_width, monitor_height) {
         Box::new(uinput)
-    } else if let Ok(xtest) = XTestInjector::new(monitor_width, monitor_height) {
-        Box::new(xtest)
     } else {
-        Box::new(MockInputInjector::new(monitor_width, monitor_height))
+        match detect_display_server() {
+            LinuxDisplayServer::Wayland => Box::new(RemoteDesktopPortalInjector::new(
+                monitor_width,
+                monitor_height,
+            )),
+            LinuxDisplayServer::X11 => {
+                if let Ok(xtest) = XTestInjector::new(monitor_width, monitor_height) {
+                    Box::new(xtest)
+                } else {
+                    Box::new(MockInputInjector::new(monitor_width, monitor_height))
+                }
+            }
+            LinuxDisplayServer::Headless => {
+                Box::new(MockInputInjector::new(monitor_width, monitor_height))
+            }
+        }
     }
 }

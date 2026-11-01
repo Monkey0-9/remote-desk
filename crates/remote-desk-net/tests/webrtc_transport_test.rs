@@ -78,3 +78,31 @@ fn test_input_event_coalescing_and_preservation() {
     // Verify coalescer reported a substantial reduction
     assert!(coalescer.reduction_ratio() > 0.5);
 }
+
+#[test]
+fn test_packet_chunking_and_reassembly() {
+    use remote_desk_net::chunking::{chunk_payload, ChunkReassembler, PacketChunk};
+
+    // Create a 5000-byte payload simulating large video frame or clipboard
+    let original: Vec<u8> = (0..5000).map(|i| (i % 256) as u8).collect();
+    let chunks = chunk_payload(42, &original);
+
+    assert_eq!(chunks.len(), 5); // 5000 / 1200 = 4.16 -> 5 chunks
+
+    let mut reassembler = ChunkReassembler::new();
+
+    // Ingest first 4 chunks - should return None
+    for chunk in &chunks[0..4] {
+        let serialized = chunk.to_bytes();
+        let parsed = PacketChunk::from_bytes(&serialized).expect("parse chunk");
+        assert!(reassembler.ingest_chunk(parsed).is_none());
+    }
+
+    // Ingest final chunk - should return Some(original)
+    let final_chunk = PacketChunk::from_bytes(&chunks[4].to_bytes()).expect("parse chunk");
+    let reassembled = reassembler
+        .ingest_chunk(final_chunk)
+        .expect("complete payload");
+
+    assert_eq!(reassembled, original);
+}

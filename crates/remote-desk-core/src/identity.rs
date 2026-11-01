@@ -18,6 +18,7 @@ pub enum IdentityError {
     InsecurePermissions(String),
 }
 
+#[derive(Clone)]
 pub struct DeviceIdentity {
     signing_key: SigningKey,
 }
