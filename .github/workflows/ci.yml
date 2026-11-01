@@ -44,6 +44,9 @@ jobs:
       - name: Run Loopback Streaming Prototype Simulation
         run: cargo run -p remote-desk-linux --example loopback_prototype
 
+      - name: Run Full End-to-End System Integration Test
+        run: cargo run -p remote-desk-host --example full_system_test
+
       - name: Run Empirical Performance Microbenchmarks
         run: cargo run -p remote-desk-bench
 

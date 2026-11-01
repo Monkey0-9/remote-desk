@@ -123,10 +123,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 # 3. Run interactive loopback streaming prototype
 cargo run -p remote-desk-linux --example loopback_prototype
 
-# 4. Execute empirical benchmark harness (WL-01 to WL-10)
+# 4. Run full end-to-end system integration test
+cargo run -p remote-desk-host --example full_system_test
+
+# 5. Execute empirical benchmark harness (WL-01 to WL-10)
 cargo run -p remote-desk-bench
 
-# 5. Validate OpenSpec capability specifications
+# 6. Validate OpenSpec capability specifications
 openspec validate --all
 ```
 
