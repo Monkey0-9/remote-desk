@@ -153,3 +153,34 @@ async fn test_host_rejects_input_when_session_inactive() {
     let res = host.process_incoming_input_frame(&packed_move).await;
     assert!(res.is_err());
 }
+
+#[tokio::test]
+async fn test_host_windows_backend_instantiation_and_capture_pipeline() {
+    let identity = DeviceIdentity::generate();
+    let host = HostService::new_windows(identity, HostConfig::default());
+
+    assert!(host.device_id().starts_with("rd-"));
+    let monitors = host.enumerate_monitors().await.unwrap();
+    assert_eq!(monitors.len(), 2);
+    assert_eq!(monitors[0].id, 0);
+
+    // Verify Windows capture backend starts and delivers frame through adapter
+    {
+        let mut capture = host.capture.lock().await;
+        capture.start_capture(0).await.unwrap();
+        let frame = capture.next_frame().await.unwrap();
+        assert_eq!(frame.width, 2560);
+        assert_eq!(frame.height, 1440);
+        capture.stop_capture().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_host_auto_backend_selection() {
+    let identity = DeviceIdentity::generate();
+    let host = HostService::new_auto(identity, HostConfig::default());
+
+    assert!(host.device_id().starts_with("rd-"));
+    let monitors = host.enumerate_monitors().await.unwrap();
+    assert!(!monitors.is_empty());
+}

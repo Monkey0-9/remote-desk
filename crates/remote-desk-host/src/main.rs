@@ -20,6 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut list_monitors_only = false;
     let mut health_check_only = false;
     let mut duration_ms: Option<u64> = None;
+    let mut backend_choice = "auto".to_string();
     let mut _display: Option<String> = None;
     let mut _session_portal = false;
 
@@ -28,6 +29,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--backend" => {
+                if i + 1 < args.len() {
+                    backend_choice = args[i + 1].to_lowercase();
+                    i += 1;
+                }
+            }
             "--name" => {
                 if i + 1 < args.len() {
                     config.device_name = args[i + 1].clone();
@@ -76,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Usage: remote-desk-host [OPTIONS]");
                 println!();
                 println!("Options:");
+                println!("  --backend <TYPE>         Capture & input backend (auto, linux, windows, mock; default: auto)");
                 println!("  --name <NAME>            Friendly name of this host");
                 println!(
                     "  --unattended             Auto-approve authenticated paired controllers"
@@ -100,12 +108,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let identity = DeviceIdentity::generate();
-    let host = HostService::new_mock(identity, config.clone());
+    let host = match backend_choice.as_str() {
+        "linux" => HostService::new_linux(identity, config.clone()),
+        "windows" => HostService::new_windows(identity, config.clone()),
+        "mock" => HostService::new_mock(identity, config.clone()),
+        _ => HostService::new_auto(identity, config.clone()),
+    };
 
     info!(
         "Host identity initialized: Device ID [{}]",
         host.device_id()
     );
+    info!("Backend Driver:  '{}'", backend_choice);
     info!("Host Name:       '{}'", config.device_name);
     info!("Unattended Mode: {}", config.unattended);
     info!("Bind Address:    '{}'", config.bind_addr);

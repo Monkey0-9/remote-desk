@@ -1,14 +1,19 @@
+use async_trait::async_trait;
 use remote_desk_core::{
     compute_sas_code, DeviceIdentity, EphemeralKeyExchange, SessionAction, SessionEvent,
     SessionStateMachine,
 };
 use remote_desk_linux::{
-    InputInjectorBackend, MockCaptureBackend, MockInputInjector, ScreenCaptureBackend,
+    CaptureError, InputError, InputInjectorBackend, MockCaptureBackend, MockInputInjector,
+    RawFrame, ScreenCaptureBackend,
 };
 use remote_desk_net::IceServerConfig;
 use remote_desk_proto::{
-    unpack_frame, KeyState, MonitorDescriptor, MouseButtonPayload, MouseMoveAbsPayload,
-    MouseMoveRelPayload, MouseWheelPayload, RemoteDeskMessage,
+    unpack_frame, KeyState, MonitorDescriptor, MouseButtonCode, MouseButtonPayload,
+    MouseMoveAbsPayload, MouseMoveRelPayload, MouseWheelPayload, RemoteDeskMessage,
+};
+use remote_desk_windows::{
+    DxgiCaptureBackend, SendInputInjector, WindowsInputInjectorBackend, WindowsScreenCaptureBackend,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -69,6 +74,90 @@ pub struct HostService {
     pub input: Arc<Mutex<Box<dyn InputInjectorBackend>>>,
 }
 
+/// Adapter wrapping Windows DXGI capture engine to satisfy cross-platform ScreenCaptureBackend
+pub struct WindowsCaptureAdapter<T: WindowsScreenCaptureBackend>(pub T);
+
+#[async_trait]
+impl<T: WindowsScreenCaptureBackend> ScreenCaptureBackend for WindowsCaptureAdapter<T> {
+    async fn enumerate_monitors(&self) -> Result<Vec<MonitorDescriptor>, CaptureError> {
+        self.0
+            .enumerate_monitors()
+            .await
+            .map_err(|e| CaptureError::BackendError(e.to_string()))
+    }
+
+    async fn start_capture(&mut self, monitor_id: u32) -> Result<(), CaptureError> {
+        self.0
+            .start_capture(monitor_id)
+            .await
+            .map_err(|e| CaptureError::BackendError(e.to_string()))
+    }
+
+    async fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
+        let frame = self
+            .0
+            .next_frame()
+            .await
+            .map_err(|e| CaptureError::BackendError(e.to_string()))?;
+        Ok(RawFrame {
+            width: frame.width,
+            height: frame.height,
+            stride: frame.stride,
+            data: frame.data,
+            timestamp_us: frame.timestamp_us,
+        })
+    }
+
+    async fn stop_capture(&mut self) -> Result<(), CaptureError> {
+        self.0
+            .stop_capture()
+            .await
+            .map_err(|e| CaptureError::BackendError(e.to_string()))
+    }
+}
+
+/// Adapter wrapping Win32 SendInput injector to satisfy cross-platform InputInjectorBackend
+pub struct WindowsInputAdapter<T: WindowsInputInjectorBackend>(pub T);
+
+#[async_trait]
+impl<T: WindowsInputInjectorBackend> InputInjectorBackend for WindowsInputAdapter<T> {
+    async fn move_pointer(&mut self, x: f32, y: f32, _relative: bool) -> Result<(), InputError> {
+        self.0
+            .move_pointer(x, y)
+            .await
+            .map_err(|e| InputError::InjectionFailed(e.to_string()))
+    }
+
+    async fn mouse_button(
+        &mut self,
+        button: MouseButtonCode,
+        down: bool,
+    ) -> Result<(), InputError> {
+        self.0
+            .mouse_button(button, down)
+            .await
+            .map_err(|e| InputError::InjectionFailed(e.to_string()))
+    }
+
+    async fn mouse_wheel(&mut self, _delta_x: i16, _delta_y: i16) -> Result<(), InputError> {
+        Ok(())
+    }
+
+    async fn keyboard_key(&mut self, scancode: u32, down: bool) -> Result<(), InputError> {
+        self.0
+            .keyboard_key(scancode, down)
+            .await
+            .map_err(|e| InputError::InjectionFailed(e.to_string()))
+    }
+
+    async fn release_all(&mut self) -> Result<(), InputError> {
+        self.0
+            .release_all()
+            .await
+            .map_err(|e| InputError::InjectionFailed(e.to_string()))
+    }
+}
+
 impl HostService {
     pub fn new(
         identity: DeviceIdentity,
@@ -82,6 +171,36 @@ impl HostService {
             state_machine: Arc::new(Mutex::new(SessionStateMachine::new())),
             capture: Arc::new(Mutex::new(capture)),
             input: Arc::new(Mutex::new(input)),
+        }
+    }
+
+    /// Creates a host service configured with native Windows DXGI / SendInput backend
+    pub fn new_windows(identity: DeviceIdentity, config: HostConfig) -> Self {
+        let capture = Box::new(WindowsCaptureAdapter(DxgiCaptureBackend::new()));
+        let input = Box::new(WindowsInputAdapter(SendInputInjector::new()));
+        Self::new(identity, config, capture, input)
+    }
+
+    /// Creates a host service configured with native Linux Wayland Portal / X11 backend
+    pub fn new_linux(identity: DeviceIdentity, config: HostConfig) -> Self {
+        let capture = remote_desk_linux::create_linux_capture_backend();
+        let input = remote_desk_linux::create_linux_input_injector(1920, 1080);
+        Self::new(identity, config, capture, input)
+    }
+
+    /// Automatically selects appropriate platform backend based on compile target and environment
+    pub fn new_auto(identity: DeviceIdentity, config: HostConfig) -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            Self::new_windows(identity, config)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::new_linux(identity, config)
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            Self::new_mock(identity, config)
         }
     }
 

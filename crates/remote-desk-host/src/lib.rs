@@ -1,3 +1,6 @@
 pub mod service;
 
-pub use service::{HandshakeResponse, HostConfig, HostError, HostService};
+pub use service::{
+    HandshakeResponse, HostConfig, HostError, HostService, WindowsCaptureAdapter,
+    WindowsInputAdapter,
+};
