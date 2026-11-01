@@ -11,3 +11,13 @@ android/app/build/
 local.properties
 .serena/
 .commandcode/
+.gemini/
+.env*
+*.key
+*.keystore
+*.jks
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cert
