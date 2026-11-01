@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Error, Debug)]
 pub enum HostError {
@@ -205,18 +205,21 @@ impl HostService {
         Self::new(identity, config, capture, input)
     }
 
-    /// Creates a host service configured with native Linux Wayland Portal / X11 backend
-    pub fn new_linux(identity: DeviceIdentity, config: HostConfig) -> Self {
-        let capture = remote_desk_linux::create_linux_capture_backend();
-        let input = remote_desk_linux::create_linux_input_injector(1920, 1080);
-        Self::new(identity, config, capture, input)
+    /// Creates a host service configured with native Linux Wayland Portal / X11 backend.
+    /// In production mode, silent fallbacks to mocks are strictly rejected.
+    pub fn new_linux(identity: DeviceIdentity, config: HostConfig) -> Result<Self, HostError> {
+        let capture = remote_desk_linux::create_linux_capture_backend(false)
+            .map_err(|e| HostError::Capture(e.to_string()))?;
+        let input = remote_desk_linux::create_linux_input_injector(1920, 1080, false)
+            .map_err(|e| HostError::Input(e.to_string()))?;
+        Ok(Self::new(identity, config, capture, input))
     }
 
     /// Automatically selects appropriate platform backend based on compile target and environment
-    pub fn new_auto(identity: DeviceIdentity, config: HostConfig) -> Self {
+    pub fn new_auto(identity: DeviceIdentity, config: HostConfig) -> Result<Self, HostError> {
         #[cfg(target_os = "windows")]
         {
-            Self::new_windows(identity, config)
+            Ok(Self::new_windows(identity, config))
         }
         #[cfg(target_os = "linux")]
         {
@@ -224,7 +227,7 @@ impl HostService {
         }
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
-            Self::new_mock(identity, config)
+            Ok(Self::new_mock(identity, config))
         }
     }
 
@@ -411,13 +414,166 @@ impl HostService {
         Ok(())
     }
 
+    /// Handles an individual incoming LAN remote desktop client session
+    pub async fn handle_client_session(
+        &self,
+        mut socket: tokio::net::TcpStream,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<(), HostError> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut init_buf = vec![0u8; 1024];
+        let n = socket
+            .read(&mut init_buf)
+            .await
+            .map_err(|e| HostError::Net(e.to_string()))?;
+        if n == 0 {
+            return Ok(());
+        }
+
+        let req_str = String::from_utf8_lossy(&init_buf[..n]);
+        if req_str.starts_with("GET /health") {
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}";
+            let _ = socket.write_all(resp.as_bytes()).await;
+            return Ok(());
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ClientHandshake {
+            peer_id: String,
+            peer_pubkey_hex: String,
+            peer_ephemeral_pubkey_hex: String,
+        }
+
+        let handshake_req: ClientHandshake = match serde_json::from_str(&req_str) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = socket
+                    .write_all(b"{\"error\":\"Invalid handshake JSON\"}\n")
+                    .await;
+                return Err(HostError::Proto(e.to_string()));
+            }
+        };
+
+        let peer_pubkey = decode_hex_32(&handshake_req.peer_pubkey_hex)
+            .ok_or_else(|| HostError::Crypto("Invalid peer public key hex".to_string()))?;
+        let peer_ephemeral =
+            decode_hex_32(&handshake_req.peer_ephemeral_pubkey_hex).ok_or_else(|| {
+                HostError::Crypto("Invalid peer ephemeral public key hex".to_string())
+            })?;
+
+        let handshake_resp = self
+            .handle_handshake(&handshake_req.peer_id, &peer_pubkey, &peer_ephemeral)
+            .await?;
+
+        // If not already active (e.g. non-unattended), grant approval for verified peer
+        let mut sm = self.state_machine.lock().await;
+        if !sm.is_active() {
+            let _ = sm.transition(remote_desk_core::session::SessionEvent::ApprovalGranted);
+        }
+        drop(sm);
+
+        #[derive(serde::Serialize)]
+        struct ServerHandshakeResp<'a> {
+            status: &'a str,
+            sas_code: &'a str,
+            host_device_id: String,
+            host_pubkey_hex: String,
+            host_ephemeral_pubkey_hex: String,
+        }
+
+        let resp_obj = ServerHandshakeResp {
+            status: "approved",
+            sas_code: &handshake_resp.sas_code,
+            host_device_id: self.device_id(),
+            host_pubkey_hex: self.identity.public_key_hex(),
+            host_ephemeral_pubkey_hex: hex_encode(&handshake_resp.host_ephemeral_pubkey),
+        };
+
+        let mut resp_json =
+            serde_json::to_vec(&resp_obj).map_err(|e| HostError::Proto(e.to_string()))?;
+        resp_json.push(b'\n');
+        socket
+            .write_all(&resp_json)
+            .await
+            .map_err(|e| HostError::Net(e.to_string()))?;
+
+        info!(
+            "LAN remote desktop session established with peer {} from {}",
+            handshake_req.peer_id, peer_addr
+        );
+
+        let (mut read_half, mut write_half) = socket.into_split();
+
+        // Start capture on primary monitor
+        let mut capture = self.capture.lock().await;
+        let _ = capture.start_capture(0).await;
+        drop(capture);
+
+        let (stop_tx, mut stop_rx) = tokio::sync::broadcast::channel::<()>(1);
+        let stop_tx_stream = stop_tx.clone();
+
+        // Spawn real video frame streaming loop (~30 FPS)
+        let capture_arc = self.capture.clone();
+        let stream_task = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(33));
+            loop {
+                tokio::select! {
+                    _ = stop_rx.recv() => {
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        let mut cap = capture_arc.lock().await;
+                        if let Ok(frame) = cap.next_frame().await {
+                            drop(cap);
+                            let frame_len = (frame.data.len() as u32).to_be_bytes();
+                            if write_half.write_all(&frame_len).await.is_err() {
+                                break;
+                            }
+                            if write_half.write_all(&frame.data).await.is_err() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Live input frame receiving loop
+        let mut in_buf = vec![0u8; 4096];
+        loop {
+            match read_half.read(&mut in_buf).await {
+                Ok(0) => {
+                    info!("Client closed remote desktop connection");
+                    break;
+                }
+                Ok(n) => {
+                    if let Err(e) = self.process_incoming_input_frame(&in_buf[..n]).await {
+                        debug!("Input processing notice: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("Socket read error from {}: {}", peer_addr, e);
+                    break;
+                }
+            }
+        }
+
+        let _ = stop_tx_stream.send(());
+        let _ = stream_task.await;
+        self.terminate_session("Client disconnected").await?;
+        Ok(())
+    }
+
     /// Runs the host network listener daemon, accepting connection handshakes,
     /// managing the active streaming session, and ensuring fail-safe shutdown.
     pub async fn run_daemon(
         &self,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) -> Result<(), HostError> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind(&self.config.bind_addr)
@@ -437,15 +593,19 @@ impl HostService {
                     match accept_res {
                         Ok((mut socket, peer_addr)) => {
                             info!("Accepted host connection from {}", peer_addr);
-                            let mut buf = vec![0u8; 1024];
-                            if let Ok(n) = socket.read(&mut buf).await {
-                                if n > 0 {
-                                    let req_str = String::from_utf8_lossy(&buf[..n]);
-                                    if req_str.starts_with("GET /health") {
-                                        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}";
-                                        let _ = socket.write_all(resp.as_bytes()).await;
-                                    }
-                                }
+
+                            // Enforce single active session policy
+                            let sm = self.state_machine.lock().await;
+                            if sm.is_active() {
+                                warn!("Rejecting connection from {}: Active session already in progress", peer_addr);
+                                drop(sm);
+                                let _ = socket.write_all(b"{\"error\":\"Active session already in progress\"}\n").await;
+                                continue;
+                            }
+                            drop(sm);
+
+                            if let Err(e) = self.handle_client_session(socket, peer_addr).await {
+                                warn!("Session error from {}: {:?}", peer_addr, e);
                             }
                         }
                         Err(e) => {
@@ -463,4 +623,36 @@ impl HostService {
         self.terminate_session("Daemon stopping").await?;
         Ok(())
     }
+}
+
+fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX_CHARS[(b >> 4) as usize] as char);
+        s.push(HEX_CHARS[(b & 0x0F) as usize] as char);
+    }
+    s
 }

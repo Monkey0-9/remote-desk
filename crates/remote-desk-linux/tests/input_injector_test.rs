@@ -6,7 +6,7 @@ use remote_desk_proto::MouseButtonCode;
 
 #[tokio::test]
 async fn test_injector_factory_instantiation() {
-    let mut injector = create_linux_input_injector(1920, 1080);
+    let mut injector = create_linux_input_injector(1920, 1080, true).expect("factory injector");
     // Should successfully accept move, click, and release
     injector.move_pointer(0.5, 0.5, false).await.expect("move");
     injector

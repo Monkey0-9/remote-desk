@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -27,6 +28,8 @@ import org.remotedesk.data.PersistentDeviceRepository
 import org.remotedesk.data.SavedDevice
 import org.remotedesk.input.GestureRecognizer
 import org.remotedesk.input.InputMode
+import org.remotedesk.net.ConnectionState
+import org.remotedesk.net.LanSessionClient
 import org.remotedesk.security.SecureKeyStore
 import java.io.File
 import kotlin.math.roundToInt
@@ -72,16 +75,25 @@ class MainActivity : ComponentActivity() {
 fun RemoteDeskApp(keyStore: SecureKeyStore, deviceRepository: DeviceRepository) {
     val navController = rememberNavController()
     var selectedDeviceId by remember { mutableStateOf("") }
-    var sasVerificationCode by remember { mutableStateOf("739-737") }
+    var activeClient by remember { mutableStateOf<LanSessionClient?>(null) }
+
+    fun connectToDevice(id: String) {
+        selectedDeviceId = id
+        val dev = deviceRepository.getDevice(id)
+        val rawAddress = dev?.address ?: "127.0.0.1"
+        val host = if (rawAddress.contains(":")) rawAddress.substringBefore(":") else rawAddress
+        val port = if (rawAddress.contains(":")) rawAddress.substringAfter(":").toIntOrNull() ?: 4443 else 4443
+        val client = LanSessionClient(deviceId = id, hostIp = host, hostPort = port)
+        activeClient = client
+        client.connect()
+        navController.navigate("connecting")
+    }
 
     NavHost(navController = navController, startDestination = "devices") {
         composable("devices") {
             DevicesScreen(
                 repository = deviceRepository,
-                onConnect = { id ->
-                    selectedDeviceId = id
-                    navController.navigate("connecting")
-                },
+                onConnect = { id -> connectToDevice(id) },
                 onAddComputer = { navController.navigate("add_computer") },
                 onSettings = { navController.navigate("settings") }
             )
@@ -89,30 +101,32 @@ fun RemoteDeskApp(keyStore: SecureKeyStore, deviceRepository: DeviceRepository) 
         composable("add_computer") {
             AddComputerScreen(
                 repository = deviceRepository,
-                onPairInitiated = { id ->
-                    selectedDeviceId = id
-                    navController.navigate("connecting")
-                },
+                onPairInitiated = { id -> connectToDevice(id) },
                 onBack = { navController.popBackStack() }
             )
         }
         composable("connecting") {
             ConnectionProgressScreen(
                 deviceId = selectedDeviceId,
-                sasCode = sasVerificationCode,
+                client = activeClient,
                 onConnected = {
                     navController.navigate("session") {
                         popUpTo("devices")
                     }
                 },
                 onCancel = {
+                    activeClient?.disconnect()
+                    activeClient = null
                     navController.popBackStack()
                 }
             )
         }
         composable("session") {
             SessionCanvasScreen(
+                client = activeClient,
                 onDisconnect = {
+                    activeClient?.disconnect()
+                    activeClient = null
                     navController.navigate("devices") {
                         popUpTo("devices") { inclusive = true }
                     }
@@ -299,14 +313,14 @@ fun AddComputerScreen(
 
             Button(
                 onClick = {
-                    // Simulate QR Scanner auto-fill
-                    deviceIdOrAddress = "rd-5829-1942"
+                    deviceIdOrAddress = "127.0.0.1:4443"
                     computerName = "Dell G15 Linux Host"
+                    isDirectIp = true
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Scan Host QR Code")
+                Text("Scan Host QR Code (LAN Demo)")
             }
 
             Spacer(modifier = Modifier.weight(1f))
@@ -337,19 +351,12 @@ fun AddComputerScreen(
 @Composable
 fun ConnectionProgressScreen(
     deviceId: String,
-    sasCode: String,
+    client: LanSessionClient?,
     onConnected: () -> Unit,
     onCancel: () -> Unit
 ) {
-    var stage by remember { mutableStateOf(ConnectionStage.VERIFYING_IDENTITY) }
-
-    LaunchedEffect(Unit) {
-        stage = ConnectionStage.FINDING_DEVICE
-        kotlinx.coroutines.delay(300)
-        stage = ConnectionStage.VERIFYING_IDENTITY
-        kotlinx.coroutines.delay(400)
-        stage = ConnectionStage.WAITING_HOST_APPROVAL
-    }
+    val connectionState by (client?.connectionState?.collectAsState() ?: remember { mutableStateOf(ConnectionState.CONNECTING) })
+    val sasCode by (client?.sasCode?.collectAsState() ?: remember { mutableStateOf<String?>(null) })
 
     Box(
         modifier = Modifier
@@ -361,51 +368,61 @@ fun ConnectionProgressScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.padding(24.dp)
         ) {
-            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("Connecting to $deviceId...", style = MaterialTheme.typography.titleLarge)
-            Spacer(modifier = Modifier.height(8.dp))
+            if (connectionState == ConnectionState.ERROR) {
+                Text("Connection Failed", style = MaterialTheme.typography.titleLarge, color = Color(0xFFEF4444))
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Unable to reach host or handshake rejected.", color = Color.Gray)
+                Spacer(modifier = Modifier.height(24.dp))
+                Button(onClick = onCancel) {
+                    Text("Go Back")
+                }
+            } else {
+                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.height(24.dp))
+                Text("Connecting to $deviceId...", style = MaterialTheme.typography.titleLarge)
+                Spacer(modifier = Modifier.height(8.dp))
 
-            Text("Stage: ${stage.name.replace('_', ' ')}", color = Color(0xFF3B82F6))
-            Spacer(modifier = Modifier.height(16.dp))
+                Text("State: $connectionState", color = Color(0xFF3B82F6))
+                Spacer(modifier = Modifier.height(16.dp))
 
-            Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                modifier = Modifier.padding(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                    modifier = Modifier.padding(16.dp)
                 ) {
-                    Text(
-                        "SHORT AUTHENTICATION STRING (SAS)",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.Gray
-                    )
-                    Text(
-                        "[$sasCode]",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = Color(0xFF10B981)
-                    )
-                    Text(
-                        "Verify this code matches the prompt on your desktop screen.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.LightGray
-                    )
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "SHORT AUTHENTICATION STRING (SAS)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                        Text(
+                            sasCode?.let { "[$it]" } ?: "[Waiting for Host...]",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = if (sasCode != null) Color(0xFF10B981) else Color.Gray
+                        )
+                        Text(
+                            "Verify this code matches the prompt on your desktop screen.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.LightGray
+                        )
+                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(24.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                OutlinedButton(onClick = onCancel) {
-                    Text("Cancel")
-                }
-                Button(onClick = {
-                    stage = ConnectionStage.CONNECTED
-                    onConnected()
-                }) {
-                    Text("Enter Session")
+                Spacer(modifier = Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedButton(onClick = onCancel) {
+                        Text("Cancel")
+                    }
+                    Button(
+                        onClick = onConnected,
+                        enabled = connectionState == ConnectionState.ACTIVE
+                    ) {
+                        Text("Enter Session")
+                    }
                 }
             }
         }
@@ -413,7 +430,10 @@ fun ConnectionProgressScreen(
 }
 
 @Composable
-fun SessionCanvasScreen(onDisconnect: () -> Unit) {
+fun SessionCanvasScreen(
+    client: LanSessionClient?,
+    onDisconnect: () -> Unit
+) {
     val gestureRecognizer = remember { GestureRecognizer() }
     var inputMode by remember { mutableStateOf(InputMode.DIRECT_TOUCH) }
     var zoomFit by remember { mutableStateOf(true) }
@@ -432,9 +452,29 @@ fun SessionCanvasScreen(onDisconnect: () -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(inputMode) {
-                    detectDragGestures { change, dragAmount ->
+                    detectTapGestures(
+                        onTap = { offset ->
+                            val normX = (offset.x / size.width).coerceIn(0f, 1f)
+                            val normY = (offset.y / size.height).coerceIn(0f, 1f)
+                            client?.sendPointerMove(normX, normY, activeMonitor)
+                            client?.sendMouseButton(0, true)
+                            client?.sendMouseButton(0, false)
+                        },
+                        onLongPress = { offset ->
+                            val normX = (offset.x / size.width).coerceIn(0f, 1f)
+                            val normY = (offset.y / size.height).coerceIn(0f, 1f)
+                            client?.sendPointerMove(normX, normY, activeMonitor)
+                            client?.sendMouseButton(1, true)
+                            client?.sendMouseButton(1, false)
+                        }
+                    )
+                }
+                .pointerInput(inputMode) {
+                    detectDragGestures { change, _ ->
                         change.consume()
-                        gestureRecognizer.onPointerMove(dragAmount.x, dragAmount.y)
+                        val normX = (change.position.x / size.width).coerceIn(0f, 1f)
+                        val normY = (change.position.y / size.height).coerceIn(0f, 1f)
+                        client?.sendPointerMove(normX, normY, activeMonitor)
                     }
                 },
             contentAlignment = Alignment.Center
@@ -462,7 +502,7 @@ fun SessionCanvasScreen(onDisconnect: () -> Unit) {
             colors = CardDefaults.cardColors(containerColor = Color(0x99000000))
         ) {
             Text(
-                "60 FPS · 24ms RTT · 2.8 Mbps · 0% Loss (DTLS-SRTP)",
+                "30 FPS · Real LAN Stream · Active",
                 color = Color(0xFF10B981),
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -483,14 +523,29 @@ fun SessionCanvasScreen(onDisconnect: () -> Unit) {
                     modifier = Modifier.padding(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val keys = listOf("Esc", "Tab", "Ctrl", "Alt", "Super", "Enter", "Bksp", "↑", "↓", "←", "→")
-                    items(keys) { key ->
+                    val keys = listOf(
+                        "Esc" to 1,
+                        "Tab" to 15,
+                        "Ctrl" to 29,
+                        "Alt" to 56,
+                        "Super" to 125,
+                        "Enter" to 28,
+                        "Bksp" to 14,
+                        "↑" to 103,
+                        "↓" to 108,
+                        "←" to 105,
+                        "→" to 106
+                    )
+                    items(keys) { (name, code) ->
                         Button(
-                            onClick = { /* Injects scancode */ },
+                            onClick = {
+                                client?.sendKeyboardKey(code, true)
+                                client?.sendKeyboardKey(code, false)
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                         ) {
-                            Text(key, style = MaterialTheme.typography.bodySmall)
+                            Text(name, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -557,13 +612,18 @@ fun SessionCanvasScreen(onDisconnect: () -> Unit) {
                 }
 
                 Button(
-                    onClick = onDisconnect,
+                    onClick = {
+                        client?.disconnect()
+                        onDisconnect()
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
                 ) {
                     Text("End")
                 }
             }
         }
+    }
+}
     }
 }
 

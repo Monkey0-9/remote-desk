@@ -137,32 +137,46 @@ pub use crate::remote_desktop_portal::RemoteDesktopPortalInjector;
 pub use crate::uinput_injector::UinputInjector;
 pub use crate::xtest_injector::XTestInjector;
 
-/// Linux Input Injector Factory
-///
-/// Prioritizes native Linux `/dev/uinput` injector, attempts Wayland RemoteDesktop portal
-/// session when running in a desktop compositor, falls back to X11 XTest injector,
-/// and finally provides `MockInputInjector` in headless/CI environments.
+/// Linux Input Injector Factory.
+/// In production mode (`allow_mock = false`), silent fallback to simulation is strictly rejected.
 pub fn create_linux_input_injector(
     monitor_width: u32,
     monitor_height: u32,
-) -> Box<dyn InputInjectorBackend> {
+    allow_mock: bool,
+) -> Result<Box<dyn InputInjectorBackend>, InputError> {
     if let Ok(uinput) = UinputInjector::new(monitor_width, monitor_height) {
-        Box::new(uinput)
+        Ok(Box::new(uinput))
     } else {
         match detect_display_server() {
-            LinuxDisplayServer::Wayland => Box::new(RemoteDesktopPortalInjector::new(
+            LinuxDisplayServer::Wayland => Ok(Box::new(RemoteDesktopPortalInjector::new(
                 monitor_width,
                 monitor_height,
-            )),
+            ))),
             LinuxDisplayServer::X11 => {
                 if let Ok(xtest) = XTestInjector::new(monitor_width, monitor_height) {
-                    Box::new(xtest)
+                    Ok(Box::new(xtest))
+                } else if allow_mock {
+                    Ok(Box::new(MockInputInjector::new(
+                        monitor_width,
+                        monitor_height,
+                    )))
                 } else {
-                    Box::new(MockInputInjector::new(monitor_width, monitor_height))
+                    Err(InputError::InjectionFailed(
+                        "Failed to initialize X11 XTest injector. Production input injection unavailable.".to_string(),
+                    ))
                 }
             }
             LinuxDisplayServer::Headless => {
-                Box::new(MockInputInjector::new(monitor_width, monitor_height))
+                if allow_mock {
+                    Ok(Box::new(MockInputInjector::new(
+                        monitor_width,
+                        monitor_height,
+                    )))
+                } else {
+                    Err(InputError::InjectionFailed(
+                        "Headless environment detected. No native input backend (/dev/uinput, Wayland portal, or X11 XTest) is available.".to_string(),
+                    ))
+                }
             }
         }
     }

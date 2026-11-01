@@ -43,7 +43,7 @@ async fn test_x11_capture_or_clean_headless_fallback() {
 
 #[tokio::test]
 async fn test_linux_capture_factory() {
-    let backend = create_linux_capture_backend();
+    let backend = create_linux_capture_backend(true).expect("factory backend");
     let monitors = backend
         .enumerate_monitors()
         .await

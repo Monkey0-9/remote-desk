@@ -172,17 +172,32 @@ pub use crate::x11_capture::X11ShmCaptureBackend;
 
 pub type PortalCaptureBackend = WaylandPortalCaptureBackend;
 
-/// Helper to create appropriate Linux capture backend based on environment
-pub fn create_linux_capture_backend() -> Box<dyn ScreenCaptureBackend> {
+/// Helper to create appropriate Linux capture backend based on environment.
+/// In production mode (`allow_mock = false`), silent fallback to simulation is strictly rejected.
+pub fn create_linux_capture_backend(
+    allow_mock: bool,
+) -> Result<Box<dyn ScreenCaptureBackend>, CaptureError> {
     match detect_display_server() {
-        LinuxDisplayServer::Wayland => Box::new(WaylandPortalCaptureBackend::new()),
+        LinuxDisplayServer::Wayland => Ok(Box::new(WaylandPortalCaptureBackend::new())),
         LinuxDisplayServer::X11 => {
             if let Ok(x11) = X11ShmCaptureBackend::new() {
-                Box::new(x11)
+                Ok(Box::new(x11))
+            } else if allow_mock {
+                Ok(Box::new(MockCaptureBackend::new()))
             } else {
-                Box::new(MockCaptureBackend::new())
+                Err(CaptureError::BackendError(
+                    "Failed to connect to X11 display server. Production capture requires an active X11 display.".to_string(),
+                ))
             }
         }
-        LinuxDisplayServer::Headless => Box::new(MockCaptureBackend::new()),
+        LinuxDisplayServer::Headless => {
+            if allow_mock {
+                Ok(Box::new(MockCaptureBackend::new()))
+            } else {
+                Err(CaptureError::BackendError(
+                    "Headless environment detected without active Wayland or X11 session. Production capture unavailable.".to_string(),
+                ))
+            }
+        }
     }
 }

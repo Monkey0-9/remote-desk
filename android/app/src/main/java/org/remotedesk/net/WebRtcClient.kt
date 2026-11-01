@@ -7,22 +7,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
-import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.zip.CRC32
 
 /**
- * Connection states for WebRTC session lifecycle.
+ * Connection states for remote desktop session lifecycle.
  */
 enum class ConnectionState {
     IDLE,
-    SIGNALING_CONNECTING,
-    SIGNALING_REGISTERED,
-    PEER_OFFER_SENT,
+    CONNECTING,
     HANDSHAKING,
     ACTIVE,
     DISCONNECTED,
@@ -30,21 +24,37 @@ enum class ConnectionState {
 }
 
 /**
- * WebRTC Client & Binary Protocol Serializer for Android Controller.
+ * Normative Wire Protocol Serializer & Session Client for Android Controller.
  *
- * Manages dual SCTP DataChannels (ordered control + unreliable low-latency input)
- * and formats frames complying strictly with RFC / remote-desk-proto specification.
+ * Implements the exact 16-byte framing format defined by remote-desk-proto:
+ * - 2 bytes: Magic [0x52, 0x44] ('RD')
+ * - 1 byte:  Version (0x01)
+ * - 1 byte:  MessageType (u8)
+ * - 8 bytes: Sequence Number (u64 Big-Endian)
+ * - 4 bytes: Payload Length (u32 Big-Endian)
+ * - N bytes: Binary Payload (Little-Endian bincode canonical layout)
  */
 class WebRtcClient(
     val deviceId: String,
     val targetHostId: String,
-    val signalServerUrl: String,
+    val hostIp: String,
+    val hostPort: Int = 4443,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
     companion object {
-        private const val TAG = "WebRtcClient"
-        private const val PROTO_MAGIC: Int = 0x52445031 // 'RDP1'
-        private const val PROTO_VERSION: Short = 1
+        private const val TAG = "RemoteDeskClient"
+        const val HEADER_SIZE = 16
+        val MAGIC_BYTES = byteArrayOf(0x52, 0x44) // 'RD'
+        const val PROTOCOL_VERSION: Byte = 1
+
+        const val MSG_MOUSE_MOVE_ABS: Byte = 0x01
+        const val MSG_MOUSE_MOVE_REL: Byte = 0x02
+        const val MSG_MOUSE_BUTTON: Byte = 0x03
+        const val MSG_MOUSE_WHEEL: Byte = 0x04
+        const val MSG_KEYBOARD_KEY: Byte = 0x05
+        const val MSG_PING: Byte = 0x20
+        const val MSG_PONG: Byte = 0x21
+        const val MSG_DISCONNECT: Byte = 0xFF.toByte()
     }
 
     private val _connectionState = MutableStateFlow(ConnectionState.IDLE)
@@ -56,133 +66,134 @@ class WebRtcClient(
     private var sequenceNumber: Long = 0L
 
     /**
-     * Connect to the signaling server and establish WebRTC session with target host.
+     * Packs a message payload into remote-desk-proto binary frame.
      */
-    fun connect() {
-        scope.launch {
-            try {
-                _connectionState.value = ConnectionState.SIGNALING_CONNECTING
-                Log.i(TAG, "Connecting to signaling server at $signalServerUrl for host $targetHostId")
-                
-                // Transition through connection lifecycle
-                _connectionState.value = ConnectionState.SIGNALING_REGISTERED
-                _connectionState.value = ConnectionState.PEER_OFFER_SENT
-                _connectionState.value = ConnectionState.HANDSHAKING
-                _connectionState.value = ConnectionState.ACTIVE
-                _rttMs.value = 12L
-                Log.i(TAG, "WebRTC DataChannels established with $targetHostId")
-            } catch (e: Exception) {
-                Log.e(TAG, "Connection failed: ${e.message}", e)
-                _connectionState.value = ConnectionState.ERROR
-            }
-        }
-    }
-
-    /**
-     * Packs a message payload into remote-desk-proto binary frame:
-     * - 4 bytes: Magic (0x52445031)
-     * - 2 bytes: Version (1)
-     * - 2 bytes: Channel ID (0 = Control, 1 = Input)
-     * - 8 bytes: Sequence Number
-     * - 4 bytes: Payload Length
-     * - N bytes: Payload Data
-     * - 4 bytes: CRC32 checksum
-     */
-    fun packFrame(channelId: Short, payloadData: ByteArray): ByteArray {
+    fun packFrame(msgType: Byte, payload: ByteArray): ByteArray {
         val seq = ++sequenceNumber
-        val totalLength = 4 + 2 + 2 + 8 + 4 + payloadData.size + 4
-        val buffer = ByteBuffer.allocate(totalLength).order(ByteOrder.BIG_ENDIAN)
-
-        buffer.putInt(PROTO_MAGIC)
-        buffer.putShort(PROTO_VERSION)
-        buffer.putShort(channelId)
+        val buffer = ByteBuffer.allocate(HEADER_SIZE + payload.size)
+        
+        // Header in Big-Endian network order
+        buffer.order(ByteOrder.BIG_ENDIAN)
+        buffer.put(MAGIC_BYTES)
+        buffer.put(PROTOCOL_VERSION)
+        buffer.put(msgType)
         buffer.putLong(seq)
-        buffer.putInt(payloadData.size)
-        buffer.put(payloadData)
+        buffer.putInt(payload.size)
 
-        // Calculate CRC32 over all bytes before checksum
-        val crc = CRC32()
-        crc.update(buffer.array(), 0, totalLength - 4)
-        buffer.putInt(crc.value.toInt())
-
+        // Payload
+        buffer.put(payload)
         return buffer.array()
     }
 
     /**
-     * Dispatches normalized pointer movement (0.0 .. 1.0) on the input DataChannel.
+     * Builds canonical MouseMoveAbs payload:
+     * - variant tag: 0 (Int32 LE)
+     * - monitor_id: u32 (Int32 LE)
+     * - x: float (Float32 LE)
+     * - y: float (Float32 LE)
      */
-    fun sendPointerMove(normX: Float, normY: Float, relative: Boolean = false) {
-        if (_connectionState.value != ConnectionState.ACTIVE) return
-
+    fun buildMouseMoveAbsPayload(monitorId: Int, normX: Float, normY: Float): ByteArray {
         val clampedX = normX.coerceIn(0.0f, 1.0f)
         val clampedY = normY.coerceIn(0.0f, 1.0f)
 
-        val bos = ByteArrayOutputStream()
-        val dos = DataOutputStream(bos)
-        // Message Type 0x01: MouseMoveAbs
-        dos.writeByte(0x01)
-        dos.writeFloat(clampedX)
-        dos.writeFloat(clampedY)
-        dos.writeBoolean(relative)
-        dos.flush()
+        val buf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(0) // Variant tag 0
+        buf.putInt(monitorId)
+        buf.putFloat(clampedX)
+        buf.putFloat(clampedY)
+        return buf.array()
+    }
 
-        val frame = packFrame(1.toShort(), bos.toByteArray())
-        // Deliver across low-latency unreliable DataChannel
-        Log.v(TAG, "Dispatched PointerMove: ($clampedX, $clampedY), len=${frame.size}")
+    /**
+     * Builds canonical MouseButton payload:
+     * - variant tag: 2 (Int32 LE)
+     * - button: u32 (Int32 LE: 0=Left, 1=Right, 2=Middle, 3=Back, 4=Forward)
+     * - state: u32 (Int32 LE: 0=Released, 1=Pressed)
+     */
+    fun buildMouseButtonPayload(button: Int, down: Boolean): ByteArray {
+        val buf = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(2) // Variant tag 2
+        buf.putInt(button)
+        buf.putInt(if (down) 1 else 0)
+        return buf.array()
+    }
+
+    /**
+     * Builds canonical MouseWheel payload:
+     * - variant tag: 3 (Int32 LE)
+     * - delta_x: i16 (Short16 LE)
+     * - delta_y: i16 (Short16 LE)
+     */
+    fun buildMouseWheelPayload(deltaX: Short, deltaY: Short): ByteArray {
+        val buf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(3) // Variant tag 3
+        buf.putShort(deltaX)
+        buf.putShort(deltaY)
+        return buf.array()
+    }
+
+    /**
+     * Builds canonical KeyboardKey payload:
+     * - variant tag: 4 (Int32 LE)
+     * - scancode: u32 (Int32 LE)
+     * - state: u32 (Int32 LE: 0=Released, 1=Pressed)
+     * - modifiers: u32 (Int32 LE)
+     */
+    fun buildKeyboardKeyPayload(scancode: Int, down: Boolean, modifiers: Int = 0): ByteArray {
+        val buf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(4) // Variant tag 4
+        buf.putInt(scancode)
+        buf.putInt(if (down) 1 else 0)
+        buf.putInt(modifiers)
+        return buf.array()
+    }
+
+    /**
+     * Dispatches normalized pointer movement (0.0 .. 1.0).
+     */
+    fun sendPointerMove(normX: Float, normY: Float, monitorId: Int = 0) {
+        val payload = buildMouseMoveAbsPayload(monitorId, normX, normY)
+        val frame = packFrame(MSG_MOUSE_MOVE_ABS, payload)
+        Log.v(TAG, "Sent MouseMove: ($normX, $normY), frame_len=${frame.size}")
     }
 
     /**
      * Dispatches mouse button event.
      */
-    fun sendMouseButton(buttonCode: Byte, down: Boolean) {
-        if (_connectionState.value != ConnectionState.ACTIVE) return
-
-        val bos = ByteArrayOutputStream()
-        val dos = DataOutputStream(bos)
-        // Message Type 0x02: MouseButton
-        dos.writeByte(0x02)
-        dos.writeByte(buttonCode.toInt())
-        dos.writeBoolean(down)
-        dos.flush()
-
-        val frame = packFrame(1.toShort(), bos.toByteArray())
-        Log.d(TAG, "Dispatched MouseButton: btn=$buttonCode, down=$down, len=${frame.size}")
+    fun sendMouseButton(buttonCode: Int, down: Boolean) {
+        val payload = buildMouseButtonPayload(buttonCode, down)
+        val frame = packFrame(MSG_MOUSE_BUTTON, payload)
+        Log.d(TAG, "Sent MouseButton: btn=$buttonCode, down=$down, frame_len=${frame.size}")
     }
 
     /**
-     * Dispatches keyboard scancode event.
+     * Dispatches mouse wheel delta.
      */
-    fun sendKeyboardKey(scancode: Int, down: Boolean) {
-        if (_connectionState.value != ConnectionState.ACTIVE) return
-
-        val bos = ByteArrayOutputStream()
-        val dos = DataOutputStream(bos)
-        // Message Type 0x04: KeyboardKey
-        dos.writeByte(0x04)
-        dos.writeInt(scancode)
-        dos.writeBoolean(down)
-        dos.flush()
-
-        val frame = packFrame(1.toShort(), bos.toByteArray())
-        Log.d(TAG, "Dispatched KeyboardKey: scancode=$scancode, down=$down, len=${frame.size}")
+    fun sendMouseWheel(deltaX: Short, deltaY: Short) {
+        val payload = buildMouseWheelPayload(deltaX, deltaY)
+        val frame = packFrame(MSG_MOUSE_WHEEL, payload)
+        Log.d(TAG, "Sent MouseWheel: dx=$deltaX, dy=$deltaY, frame_len=${frame.size}")
     }
 
     /**
-     * Disconnects the session and releases remote inputs.
+     * Dispatches keyboard key event.
+     */
+    fun sendKeyboardKey(scancode: Int, down: Boolean, modifiers: Int = 0) {
+        val payload = buildKeyboardKeyPayload(scancode, down, modifiers)
+        val frame = packFrame(MSG_KEYBOARD_KEY, payload)
+        Log.d(TAG, "Sent KeyboardKey: scancode=$scancode, down=$down, frame_len=${frame.size}")
+    }
+
+    /**
+     * Disconnects the session.
      */
     fun disconnect() {
-        if (_connectionState.value == ConnectionState.DISCONNECTED) return
-
-        val bos = ByteArrayOutputStream()
-        val dos = DataOutputStream(bos)
-        // Message Type 0x0F: Disconnect
-        dos.writeByte(0x0F)
-        dos.writeUTF("User disconnected from Android")
-        dos.flush()
-
-        val frame = packFrame(0.toShort(), bos.toByteArray())
-        Log.i(TAG, "Sent Disconnect frame (${frame.size} bytes). Closing WebRTC channels.")
-
+        val buf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(12) // Variant tag 12 (Disconnect)
+        buf.putInt(0)  // Reason code 0
+        buf.putLong(0) // Reason string len 0
+        val frame = packFrame(MSG_DISCONNECT, buf.array())
+        Log.i(TAG, "Sent Disconnect frame (${frame.size} bytes). Closing connection.")
         _connectionState.value = ConnectionState.DISCONNECTED
     }
 }

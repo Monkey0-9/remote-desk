@@ -136,10 +136,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let host = match backend_choice.as_str() {
-        "linux" => HostService::new_linux(identity, config.clone()),
+        "linux" => HostService::new_linux(identity, config.clone())?,
         "windows" => HostService::new_windows(identity, config.clone()),
         "mock" => HostService::new_mock(identity, config.clone()),
-        _ => HostService::new_auto(identity, config.clone()),
+        _ => match HostService::new_auto(identity.clone(), config.clone()) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(
+                    "Production native backend initialization failed: {}. To run simulation pass --backend mock.",
+                    e
+                );
+                return Err(Box::new(e) as Box<dyn std::error::Error>);
+            }
+        },
     };
 
     info!(
