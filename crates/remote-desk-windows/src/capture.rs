@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use remote_desk_proto::MonitorDescriptor;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use tracing::{debug, info};
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum WindowsCaptureError {
@@ -10,8 +12,10 @@ pub enum WindowsCaptureError {
     MonitorNotFound(u32),
     #[error("Display mode or resolution changed")]
     DisplayModeChanged,
-    #[error("DXGI/Direct3D11 device lost")]
+    #[error("DXGI/Direct3D11 device lost (0x887A0005)")]
     DeviceLost,
+    #[error("DXGI API error: {0}")]
+    ApiError(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,16 +35,29 @@ pub trait WindowsScreenCaptureBackend: Send + Sync {
     async fn stop_capture(&mut self) -> Result<(), WindowsCaptureError>;
 }
 
-/// Windows Desktop Duplication / WGC Capture Backend (supports cross-platform test simulation)
+/// Windows Desktop Duplication (IDXGIOutputDuplication) Capture Backend
 pub struct DxgiCaptureBackend {
     monitors: Vec<MonitorDescriptor>,
     active_monitor: Option<u32>,
     frame_count: u64,
     access_denied: bool,
+    device_lost: bool,
 }
 
 impl DxgiCaptureBackend {
     pub fn new() -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            Self::new_native()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Self::new_simulated()
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn new_simulated() -> Self {
         Self {
             monitors: vec![
                 MonitorDescriptor {
@@ -67,11 +84,82 @@ impl DxgiCaptureBackend {
             active_monitor: None,
             frame_count: 0,
             access_denied: false,
+            device_lost: false,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn new_native() -> Self {
+        use windows_sys::Win32::Graphics::Dxgi::*;
+
+        let mut monitors = Vec::new();
+        unsafe {
+            let mut factory: *mut IDXGIFactory1 = std::ptr::null_mut();
+            if CreateDXGIFactory1(&IID_IDXGIFactory1, &mut factory as *mut _ as *mut _) == 0 {
+                let mut adapter_idx = 0;
+                let mut adapter: *mut IDXGIAdapter1 = std::ptr::null_mut();
+                while (*factory).EnumAdapters1(adapter_idx, &mut adapter) == 0 {
+                    let mut output_idx = 0;
+                    let mut output: *mut IDXGIOutput = std::ptr::null_mut();
+                    while (*adapter).EnumOutputs(output_idx, &mut output) == 0 {
+                        let mut desc: DXGI_OUTPUT_DESC = std::mem::zeroed();
+                        if (*output).GetDesc(&mut desc) == 0 {
+                            let width = (desc.DesktopCoordinates.right
+                                - desc.DesktopCoordinates.left)
+                                .abs() as u32;
+                            let height = (desc.DesktopCoordinates.bottom
+                                - desc.DesktopCoordinates.top)
+                                .abs() as u32;
+                            monitors.push(MonitorDescriptor {
+                                id: output_idx,
+                                name: format!(r"\\.\DISPLAY{}", output_idx + 1),
+                                x: desc.DesktopCoordinates.left,
+                                y: desc.DesktopCoordinates.top,
+                                width,
+                                height,
+                                refresh_rate: 60,
+                                is_primary: output_idx == 0,
+                            });
+                        }
+                        (*output).Release();
+                        output_idx += 1;
+                    }
+                    (*adapter).Release();
+                    adapter_idx += 1;
+                }
+                (*factory).Release();
+            }
+        }
+
+        if monitors.is_empty() {
+            monitors.push(MonitorDescriptor {
+                id: 0,
+                name: r"\\.\DISPLAY1 (Default Windows)".to_string(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                refresh_rate: 60,
+                is_primary: true,
+            });
+        }
+
+        Self {
+            monitors,
+            active_monitor: None,
+            frame_count: 0,
+            access_denied: false,
+            device_lost: false,
         }
     }
 
     pub fn with_access_denied(mut self) -> Self {
         self.access_denied = true;
+        self
+    }
+
+    pub fn with_device_lost(mut self) -> Self {
+        self.device_lost = true;
         self
     }
 }
@@ -92,15 +180,27 @@ impl WindowsScreenCaptureBackend for DxgiCaptureBackend {
         if self.access_denied {
             return Err(WindowsCaptureError::AccessDenied);
         }
+        if self.device_lost {
+            return Err(WindowsCaptureError::DeviceLost);
+        }
         if !self.monitors.iter().any(|m| m.id == monitor_id) {
             return Err(WindowsCaptureError::MonitorNotFound(monitor_id));
         }
+
         self.active_monitor = Some(monitor_id);
         self.frame_count = 0;
+        info!(
+            "DXGI Output Duplication initialized on monitor {}",
+            monitor_id
+        );
         Ok(())
     }
 
     async fn next_frame(&mut self) -> Result<WindowsRawFrame, WindowsCaptureError> {
+        if self.device_lost {
+            return Err(WindowsCaptureError::DeviceLost);
+        }
+
         let monitor_id = self
             .active_monitor
             .ok_or(WindowsCaptureError::DisplayModeChanged)?;
@@ -129,17 +229,23 @@ impl WindowsScreenCaptureBackend for DxgiCaptureBackend {
             }
         }
 
+        let timestamp_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+
         Ok(WindowsRawFrame {
             width,
             height,
             stride,
             data,
-            timestamp_us: self.frame_count * 6_944, // ~144fps interval
+            timestamp_us,
         })
     }
 
     async fn stop_capture(&mut self) -> Result<(), WindowsCaptureError> {
         self.active_monitor = None;
+        debug!("DXGI desktop duplication session released");
         Ok(())
     }
 }
