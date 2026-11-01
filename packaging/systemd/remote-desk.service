@@ -1,6 +1,6 @@
 [Unit]
 Description=Remote-Desk Secure Host Streaming Daemon (System Service)
-Documentation=https://github.com/remote-desk/remote-desk
+Documentation=https://github.com/Monkey0-9/remote-desk
 After=network-online.target
 Wants=network-online.target
 

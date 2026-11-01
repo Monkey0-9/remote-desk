@@ -3,7 +3,7 @@ Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Privacy-first, low-latency remote desktop system
 License:        MIT or Apache-2.0
-URL:            https://github.com/remote-desk/remote-desk
+URL:            https://github.com/Monkey0-9/remote-desk
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cargo

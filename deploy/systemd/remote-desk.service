@@ -1,6 +1,6 @@
 [Unit]
 Description=Remote-Desk Host Screen Streaming & Input Service
-Documentation=https://github.com/remote-desk/remote-desk
+Documentation=https://github.com/Monkey0-9/remote-desk
 After=network.target sound.target pipewire.service
 PartOf=graphical-session.target
 

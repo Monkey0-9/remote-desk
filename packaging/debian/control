@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Remote-Desk Contributors <maintainers@remotedesk.org>
 Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.75)
 Standards-Version: 4.6.2
-Homepage: https://github.com/remote-desk/remote-desk
+Homepage: https://github.com/Monkey0-9/remote-desk
 
 Package: remote-desk
 Architecture: any

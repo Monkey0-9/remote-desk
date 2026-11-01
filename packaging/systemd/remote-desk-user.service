@@ -1,6 +1,6 @@
 [Unit]
 Description=Remote-Desk Host Streaming Session (User Session)
-Documentation=https://github.com/remote-desk/remote-desk
+Documentation=https://github.com/Monkey0-9/remote-desk
 PartOf=graphical-session.target
 After=graphical-session.target
 
