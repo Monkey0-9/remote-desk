@@ -12,6 +12,7 @@ local.properties
 .serena/
 .commandcode/
 .gemini/
+.superpowers/
 .env*
 *.key
 *.keystore
