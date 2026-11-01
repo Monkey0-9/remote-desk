@@ -169,6 +169,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let host_arc = std::sync::Arc::new(host);
+    let host_daemon = host_arc.clone();
+
+    let daemon_task = tokio::spawn(async move {
+        if let Err(e) = host_daemon.run_daemon(shutdown_rx).await {
+            tracing::warn!("Host daemon listener ended with: {:?}", e);
+        }
+    });
+
     info!("Remote-Desk host daemon is running and listening for client handshakes...");
     info!("Press Ctrl+C to terminate host service.");
 
@@ -176,22 +186,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(ms)) => {
                 info!("Duration limit of {}ms reached. Shutting down Remote-Desk host...", ms);
-                host.terminate_session("Duration limit reached").await?;
+                let _ = shutdown_tx.send(());
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("Received shutdown signal. Releasing resources...");
-                host.terminate_session("Process terminated").await?;
+                let _ = shutdown_tx.send(());
             }
         }
     } else {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("Received shutdown signal. Releasing resources...");
-                host.terminate_session("Process terminated").await?;
+                let _ = shutdown_tx.send(());
             }
         }
     }
 
+    let _ = daemon_task.await;
     info!("Host daemon stopped cleanly.");
     Ok(())
 }

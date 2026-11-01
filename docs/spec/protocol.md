@@ -4,7 +4,7 @@
 |---|---|
 | **Document ID** | RD-SPEC-PROTO-006 |
 | **Author / Agent** | Networking & Transport Protocol Agent |
-| **Protocol Version** | 1.0.0 (Magic Bytes: `RD01`) |
+| **Protocol Version** | 1.0.0 (Magic Bytes: `0x52, 0x44` ["RD"], Version: `0x01`) |
 | **Serialization** | JSON/CBOR (Signaling), Bincode/Binary (Control DataChannel) |
 | **Status** | Approved Protocol Specification |
 

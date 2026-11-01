@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 jobs:
   rust-verify:
     name: Rust Workspace Tests & Lints
@@ -38,10 +41,10 @@ jobs:
       - name: Run Full Workspace Tests
         run: cargo test --workspace --all-targets
 
-      - name: Run Loopback Streaming Prototype
-        run: cargo run --example loopback_prototype
+      - name: Run Loopback Streaming Prototype Simulation
+        run: cargo run -p remote-desk-linux --example loopback_prototype
 
-      - name: Run Performance Benchmark Suite
+      - name: Run Empirical Performance Microbenchmarks
         run: cargo run -p remote-desk-bench
 
   openspec-verify:

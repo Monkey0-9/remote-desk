@@ -43,9 +43,15 @@ fn main() {
         "{:<45} | {:.1}% event queue reduction",
         "Input Event Coalescing Ratio", micro.input_coalescing_reduction_ratio_pct
     );
+    println!(
+        "{:<45} | {:.0} trans/sec ({:.1} ns/op)",
+        "Session State Machine Transitions",
+        micro.session_transition_ops_per_sec,
+        micro.session_transition_latency_ns
+    );
     println!("-------------------------------------------------------------------------------\n");
 
-    println!("Standardized Workloads Evaluation (WL-01 to WL-10):");
+    println!("Standardized Workloads Evaluation Targets (WL-01 to WL-10):");
     println!("-------------------------------------------------------------------------------");
     println!(
         "{:<35} | {:<12} | {:<10} | {:<8} | {:<8} | {:<10}",
@@ -119,6 +125,6 @@ fn main() {
     }
     println!("-----------------------------------------------------------------------------------------------------\n");
     println!(
-        "VERIFICATION STATUS: All empirical measurements meet or exceed Phase 6 exit criteria."
+        "BENCHMARK STATUS: Empirical microbenchmarks completed with real measured hardware timings.\nWorkload matrices (WL-01..10) represent proposed architecture design budgets."
     );
 }

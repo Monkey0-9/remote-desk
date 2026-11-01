@@ -121,7 +121,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 
 # 3. Run interactive loopback streaming prototype
-cargo run --example loopback_prototype
+cargo run -p remote-desk-linux --example loopback_prototype
 
 # 4. Execute empirical benchmark harness (WL-01 to WL-10)
 cargo run -p remote-desk-bench
@@ -132,11 +132,11 @@ openspec validate --all
 
 ---
 
-## 4. Empirical Performance Benchmarks
+## 4. Empirical Performance Benchmarks & Design Budgets
 
-Measured using the standardized test harness in `remote-desk-bench` on an equivalent 1080p60 testbed:
+Empirical microbenchmarks are measured in real time on the local hardware via `remote-desk-bench`, while end-to-end workload metrics represent target engineering budgets:
 
-### 4.1 Standardized Workload Suite (WL-01 to WL-10)
+### 4.1 Standardized Workload Suite Targets (WL-01 to WL-10 Design Budgets)
 
 | Workload Identifier & Scenario | Latency (Median / P95) | Delivered FPS | CPU Usage | RAM RSS | Network Bandwidth |
 |---|---|---|---|---|---|

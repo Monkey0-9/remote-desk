@@ -56,7 +56,7 @@ pub struct ComparativeBenchmarkRow {
 pub struct BenchmarkSuite;
 
 impl BenchmarkSuite {
-    /// Executes simulated latency measurement probe for a given workload
+    /// Retrieves architectural target budget for a given standardized workload
     pub fn run_workload(id: WorkloadId) -> WorkloadResult {
         let (name, min_ms, median_ms, p95_ms, p99_ms, max_ms, fps, drops, cpu, ram, kbps, rec) =
             match id {

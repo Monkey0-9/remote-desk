@@ -123,6 +123,28 @@ impl WaylandPortalCaptureBackend {
                     "ScreenCast portal session approved by user: {:?}",
                     session_path
                 );
+
+                // Open PipeWire remote file descriptor
+                let remote_options: HashMap<&str, Value> = HashMap::new();
+                let pw_res = conn
+                    .call_method(
+                        Some(PORTAL_DEST),
+                        PORTAL_PATH,
+                        Some(SCREENCAST_IFACE),
+                        "OpenPipeWireRemote",
+                        &(&session_path, remote_options),
+                    )
+                    .await;
+
+                if let Ok(reply) = pw_res {
+                    if let Ok(fd) = reply.body().deserialize::<zbus::zvariant::Fd>() {
+                        use std::os::unix::io::AsRawFd;
+                        let raw = fd.as_raw_fd();
+                        self.pipewire_fd = Some(raw);
+                        info!("Acquired real PipeWire remote file descriptor: {}", raw);
+                    }
+                }
+
                 self.session_handle = Some(session_path);
                 Ok(())
             }

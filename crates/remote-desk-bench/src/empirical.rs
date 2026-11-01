@@ -1,5 +1,6 @@
 use remote_desk_core::identity::DeviceIdentity;
 use remote_desk_core::pairing::EphemeralKeyExchange;
+use remote_desk_core::session::{SessionEvent, SessionStateMachine};
 use remote_desk_net::coalescer::InputEventCoalescer;
 use remote_desk_proto::codec::{pack_frame, unpack_frame};
 use remote_desk_proto::messages::{
@@ -20,6 +21,8 @@ pub struct EmpiricalBenchmarkMetrics {
     pub frame_pack_latency_ns: f64,
     pub coordinate_sanitizer_ops_per_sec: f64,
     pub input_coalescing_reduction_ratio_pct: f64,
+    pub session_transition_ops_per_sec: f64,
+    pub session_transition_latency_ns: f64,
 }
 
 pub fn run_empirical_microbenchmarks() -> EmpiricalBenchmarkMetrics {
@@ -111,6 +114,28 @@ pub fn run_empirical_microbenchmarks() -> EmpiricalBenchmarkMetrics {
     }));
     let ratio = coalescer.reduction_ratio() * 100.0;
 
+    // 7. Measure SessionStateMachine transition latency
+    let sm_iters = 5_000;
+    let start = Instant::now();
+    for _ in 0..sm_iters {
+        let mut sm = SessionStateMachine::new();
+        let _ = sm.transition(SessionEvent::InitiateHandshake {
+            peer_id: "test-peer".to_string(),
+        });
+        let _ = sm.transition(SessionEvent::SasGenerated {
+            sas_code: "123-456".to_string(),
+        });
+        let _ = sm.transition(SessionEvent::ApprovalGranted);
+        let _ = sm.transition(SessionEvent::Pause);
+        let _ = sm.transition(SessionEvent::Resume);
+        let _ = sm.transition(SessionEvent::Disconnect("done".to_string()));
+    }
+    let elapsed = start.elapsed();
+    let total_transitions = (sm_iters * 6) as f64;
+    let session_transition_latency_ns =
+        (elapsed.as_secs_f64() * 1_000_000_000.0) / total_transitions;
+    let session_transition_ops_per_sec = total_transitions / elapsed.as_secs_f64();
+
     EmpiricalBenchmarkMetrics {
         ed25519_sign_ops_per_sec,
         ed25519_sign_latency_us,
@@ -122,5 +147,7 @@ pub fn run_empirical_microbenchmarks() -> EmpiricalBenchmarkMetrics {
         frame_pack_latency_ns,
         coordinate_sanitizer_ops_per_sec,
         input_coalescing_reduction_ratio_pct: ratio,
+        session_transition_ops_per_sec,
+        session_transition_latency_ns,
     }
 }

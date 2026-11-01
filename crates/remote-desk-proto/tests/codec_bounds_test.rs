@@ -1,7 +1,47 @@
-use remote_desk_proto::codec::{pack_frame, unpack_frame, SequenceWindowTracker};
+use remote_desk_proto::codec::{
+    pack_frame, unpack_frame, unpack_streaming_frame, ProtoError, SequenceWindowTracker,
+};
 use remote_desk_proto::messages::{
     ClipboardDataPayload, MouseMoveAbsPayload, RemoteDeskMessage, TouchGesturePayload,
 };
+
+#[test]
+fn test_unpack_frame_rejects_trailing_bytes() {
+    let msg = RemoteDeskMessage::ClipboardData(ClipboardDataPayload {
+        mime_type: "text/plain".to_string(),
+        data: b"exact frame test".to_vec(),
+    });
+    let mut bytes = pack_frame(1, &msg).expect("pack frame");
+
+    // Valid unpack
+    let (seq, unpacked) = unpack_frame(&bytes).expect("exact unpack");
+    assert_eq!(seq, 1);
+    assert_eq!(unpacked, msg);
+
+    // Append trailing byte
+    bytes.push(0xFF);
+    let err = unpack_frame(&bytes).expect_err("must reject trailing bytes");
+    assert!(matches!(err, ProtoError::PayloadLengthMismatch { .. }));
+
+    // Streaming unpacker safely consumes only the exact frame
+    let ((stream_seq, stream_msg), consumed) =
+        unpack_streaming_frame(&bytes).expect("streaming unpack ignores trailing");
+    assert_eq!(stream_seq, 1);
+    assert_eq!(stream_msg, msg);
+    assert_eq!(consumed, bytes.len() - 1);
+}
+
+#[test]
+fn test_unpack_frame_rejects_nan_coordinates() {
+    let bad_msg = RemoteDeskMessage::MouseMoveAbs(MouseMoveAbsPayload {
+        monitor_id: 0,
+        x: f32::NAN,
+        y: 0.5,
+    });
+    let bytes = pack_frame(10, &bad_msg).expect("pack");
+    let err = unpack_frame(&bytes).expect_err("must reject NaN in unpack_frame");
+    assert_eq!(err, ProtoError::InvalidCoordinates);
+}
 
 #[test]
 fn test_sequence_window_tracker_replay_rejection() {

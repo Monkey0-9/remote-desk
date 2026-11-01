@@ -33,6 +33,7 @@ pub trait WindowsInputInjectorBackend: Send + Sync {
         down: bool,
     ) -> Result<(), WindowsInputError>;
     async fn mouse_wheel(&mut self, delta: i16) -> Result<(), WindowsInputError>;
+    async fn mouse_wheel_horizontal(&mut self, delta: i16) -> Result<(), WindowsInputError>;
     async fn keyboard_key(&mut self, scancode: u32, down: bool) -> Result<(), WindowsInputError>;
     async fn release_all(&mut self) -> Result<(), WindowsInputError>;
 }
@@ -178,6 +179,21 @@ impl WindowsInputInjectorBackend for SendInputInjector {
             let mut input: INPUT = std::mem::zeroed();
             input.r#type = INPUT_MOUSE;
             input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
+            input.Anonymous.mi.mouseData = (_delta as i32) * 120; // WHEEL_DELTA
+            Self::send_win32_input(input)?;
+        }
+
+        self.injected_count += 1;
+        Ok(())
+    }
+
+    async fn mouse_wheel_horizontal(&mut self, _delta: i16) -> Result<(), WindowsInputError> {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+            let mut input: INPUT = std::mem::zeroed();
+            input.r#type = INPUT_MOUSE;
+            input.Anonymous.mi.dwFlags = MOUSEEVENTF_HWHEEL;
             input.Anonymous.mi.mouseData = (_delta as i32) * 120; // WHEEL_DELTA
             Self::send_win32_input(input)?;
         }

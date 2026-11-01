@@ -3,7 +3,9 @@ use byteorder::{BigEndian, ByteOrder};
 use thiserror::Error;
 
 pub const HEADER_SIZE: usize = 16;
-pub const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024; // 16 MB boundary limit
+pub const MAX_INPUT_PAYLOAD_SIZE: usize = 1024; // 1 KB max for high-frequency input events
+pub const MAX_CONTROL_PAYLOAD_SIZE: usize = 64 * 1024; // 64 KB max for topology and control
+pub const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024; // 16 MB boundary limit for frames / clipboard
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ProtoError {
@@ -26,6 +28,9 @@ pub enum ProtoError {
 
     #[error("Payload too large: {0} bytes exceeds safety limit")]
     PayloadTooLarge(usize),
+
+    #[error("Invalid or non-finite coordinates in input payload")]
+    InvalidCoordinates,
 
     #[error("Serialization error: {0}")]
     SerializationError(String),
@@ -178,14 +183,17 @@ pub fn pack_frame(sequence: u64, msg: &RemoteDeskMessage) -> Result<Vec<u8>, Pro
     Ok(out)
 }
 
+/// Unpacks an exact single protocol frame from the buffer.
+/// Enforces exact framing: returns `PayloadLengthMismatch` if buffer has trailing bytes.
+/// Also validates input coordinates (rejects NaN / Infinity).
 pub fn unpack_frame(buf: &[u8]) -> Result<(u64, RemoteDeskMessage), ProtoError> {
     let header = FrameHeader::parse(buf)?;
     let total_len = HEADER_SIZE + header.payload_len as usize;
 
-    if buf.len() < total_len {
+    if buf.len() != total_len {
         return Err(ProtoError::PayloadLengthMismatch {
             header: header.payload_len as usize,
-            actual: buf.len() - HEADER_SIZE,
+            actual: buf.len().saturating_sub(HEADER_SIZE),
         });
     }
 
@@ -202,5 +210,54 @@ pub fn unpack_frame(buf: &[u8]) -> Result<(u64, RemoteDeskMessage), ProtoError> 
         )));
     }
 
+    // Validate coordinates to reject NaN and Infinity
+    match &msg {
+        RemoteDeskMessage::MouseMoveAbs(p) if !p.is_valid() => {
+            return Err(ProtoError::InvalidCoordinates);
+        }
+        RemoteDeskMessage::TouchGesture(p) if !p.is_valid() => {
+            return Err(ProtoError::InvalidCoordinates);
+        }
+        _ => {}
+    }
+
     Ok((header.sequence, msg))
+}
+
+/// Unpacks a single frame from a streaming buffer which may contain multiple frames.
+/// Returns `((sequence, message), bytes_consumed)`.
+pub fn unpack_streaming_frame(buf: &[u8]) -> Result<((u64, RemoteDeskMessage), usize), ProtoError> {
+    let header = FrameHeader::parse(buf)?;
+    let total_len = HEADER_SIZE + header.payload_len as usize;
+
+    if buf.len() < total_len {
+        return Err(ProtoError::BufferTooShort {
+            expected: total_len,
+            actual: buf.len(),
+        });
+    }
+
+    let payload_slice = &buf[HEADER_SIZE..total_len];
+    let msg: RemoteDeskMessage = bincode::deserialize(payload_slice)
+        .map_err(|e| ProtoError::SerializationError(e.to_string()))?;
+
+    if msg.message_type() != header.msg_type {
+        return Err(ProtoError::SerializationError(format!(
+            "Header message type {:?} does not match payload {:?}",
+            header.msg_type,
+            msg.message_type()
+        )));
+    }
+
+    match &msg {
+        RemoteDeskMessage::MouseMoveAbs(p) if !p.is_valid() => {
+            return Err(ProtoError::InvalidCoordinates);
+        }
+        RemoteDeskMessage::TouchGesture(p) if !p.is_valid() => {
+            return Err(ProtoError::InvalidCoordinates);
+        }
+        _ => {}
+    }
+
+    Ok(((header.sequence, msg), total_len))
 }
