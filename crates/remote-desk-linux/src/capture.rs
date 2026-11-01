@@ -167,53 +167,22 @@ impl ScreenCaptureBackend for MockCaptureBackend {
     }
 }
 
-/// Freedesktop XDG Portal ScreenCast Backend (for Wayland sessions)
-pub struct PortalCaptureBackend {
-    inner: MockCaptureBackend,
-    session_token: Option<String>,
-}
+pub use crate::portal_capture::WaylandPortalCaptureBackend;
+pub use crate::x11_capture::X11ShmCaptureBackend;
 
-impl PortalCaptureBackend {
-    pub fn new() -> Self {
-        Self {
-            inner: MockCaptureBackend::new(),
-            session_token: None,
-        }
-    }
-}
-
-impl Default for PortalCaptureBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl ScreenCaptureBackend for PortalCaptureBackend {
-    async fn enumerate_monitors(&self) -> Result<Vec<MonitorDescriptor>, CaptureError> {
-        self.inner.enumerate_monitors().await
-    }
-
-    async fn start_capture(&mut self, monitor_id: u32) -> Result<(), CaptureError> {
-        self.session_token = Some(format!("portal-session-{}", monitor_id));
-        self.inner.start_capture(monitor_id).await
-    }
-
-    async fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
-        self.inner.next_frame().await
-    }
-
-    async fn stop_capture(&mut self) -> Result<(), CaptureError> {
-        self.session_token = None;
-        self.inner.stop_capture().await
-    }
-}
+pub type PortalCaptureBackend = WaylandPortalCaptureBackend;
 
 /// Helper to create appropriate Linux capture backend based on environment
 pub fn create_linux_capture_backend() -> Box<dyn ScreenCaptureBackend> {
     match detect_display_server() {
-        LinuxDisplayServer::Wayland => Box::new(PortalCaptureBackend::new()),
-        LinuxDisplayServer::X11 => Box::new(MockCaptureBackend::new()),
+        LinuxDisplayServer::Wayland => Box::new(WaylandPortalCaptureBackend::new()),
+        LinuxDisplayServer::X11 => {
+            if let Ok(x11) = X11ShmCaptureBackend::new() {
+                Box::new(x11)
+            } else {
+                Box::new(MockCaptureBackend::new())
+            }
+        }
         LinuxDisplayServer::Headless => Box::new(MockCaptureBackend::new()),
     }
 }
