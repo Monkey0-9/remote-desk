@@ -1,4 +1,4 @@
-use remote_desk_signal::RendezvousBroker;
+use remote_desk_signal::SignalingServer;
 use std::env;
 use std::time::Duration;
 use tracing::{info, Level};
@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Usage: remote-desk-signal [OPTIONS]");
                 println!();
                 println!("Options:");
-                println!("  --bind <ADDR>          Bind address for rendezvous broker (default: 0.0.0.0:4443 or BIND_ADDR)");
+                println!("  --bind <ADDR>          Bind address for WebSocket signaling (default: 0.0.0.0:4443 or BIND_ADDR)");
                 println!(
                     "  --capacity <NUM>       Maximum concurrent device capacity (default: 10000)"
                 );
@@ -63,35 +63,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    let _broker = RendezvousBroker::new(capacity);
-
     if health_check_only {
         info!("Remote-Desk Rendezvous Broker health check: READY. Zero persistent state recorded.");
         return Ok(());
     }
 
-    info!("Starting Remote-Desk Rendezvous Signaling Server (RD-SIGNAL-001)...");
+    info!("Starting Remote-Desk Async WebSocket Signaling Server (RD-SIGNAL-001)...");
     info!("Configuration: Ephemeral In-Memory Routing, Zero Database, Zero Packet Logging");
+
+    let server = SignalingServer::bind(&bind_addr, capacity).await?;
+    let bound_addr = server.local_addr().to_string();
     info!(
-        "Rendezvous Broker initialized. Capacity: {} concurrent endpoints.",
-        capacity
+        "Signaling Server online on {}. Capacity: {} concurrent endpoints.",
+        bound_addr, capacity
     );
-    info!("Listening for peer signaling handshakes on {}", bind_addr);
+    info!(
+        "Endpoints available: WebSocket ws://{}/ and HTTP GET http://{}/health",
+        bound_addr, bound_addr
+    );
     info!("Press Ctrl+C to terminate signaling server.");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+    let server_task = tokio::spawn(async move {
+        let _ = server.run(shutdown_rx).await;
+    });
 
     if let Some(ms) = duration_ms {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(ms)) => {
-                info!("Duration limit of {}ms reached. Shutting down signaling server...", ms);
+                info!("Duration limit of {}ms reached. Initiating clean shutdown...", ms);
             }
             _ = tokio::signal::ctrl_c() => {
-                info!("Received termination signal. Shutting down signaling server...");
+                info!("Received termination signal. Initiating clean shutdown...");
             }
         }
     } else {
         tokio::signal::ctrl_c().await?;
-        info!("Received termination signal. Shutting down signaling server...");
+        info!("Received termination signal. Initiating clean shutdown...");
     }
+
+    let _ = shutdown_tx.send(());
+    let _ = server_task.await;
 
     info!("Signaling server terminated cleanly.");
     Ok(())

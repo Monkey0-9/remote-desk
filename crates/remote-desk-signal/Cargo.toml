@@ -8,11 +8,15 @@ authors.workspace = true
 [dependencies]
 remote-desk-net = { path = "../remote-desk-net" }
 remote-desk-core = { path = "../remote-desk-core" }
+remote-desk-proto = { path = "../remote-desk-proto" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tokio-tungstenite = "0.23"
+futures-util = "0.3"
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
