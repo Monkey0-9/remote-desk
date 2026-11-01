@@ -1,9 +1,49 @@
-use remote_desk_bench::{BenchmarkSuite, WorkloadId};
+use remote_desk_bench::{run_empirical_microbenchmarks, BenchmarkSuite, WorkloadId};
 
 fn main() {
     println!("===============================================================================");
     println!("       REMOTE-DESK EMPIRICAL PERFORMANCE & BENCHMARK HARNESS (RD-BENCH-001)    ");
     println!("===============================================================================\n");
+
+    println!("Running genuine hardware-calibrated cryptographic and protocol microbenchmarks...");
+    let micro = run_empirical_microbenchmarks();
+    println!("-------------------------------------------------------------------------------");
+    println!(
+        "{:<45} | {:<20}",
+        "Empirical Benchmark Metric", "Measured Value"
+    );
+    println!("-------------------------------------------------------------------------------");
+    println!(
+        "{:<45} | {:.0} ops/sec ({:.2} µs/op)",
+        "Ed25519 Signature Generation",
+        micro.ed25519_sign_ops_per_sec,
+        micro.ed25519_sign_latency_us
+    );
+    println!(
+        "{:<45} | {:.0} ops/sec ({:.2} µs/op)",
+        "Ed25519 Signature Verification",
+        micro.ed25519_verify_ops_per_sec,
+        micro.ed25519_verify_latency_us
+    );
+    println!(
+        "{:<45} | {:.0} ops/sec ({:.2} µs/op)",
+        "X25519 Key Exchange (ECDH)", micro.x25519_ecdh_ops_per_sec, micro.x25519_ecdh_latency_us
+    );
+    println!(
+        "{:<45} | {:.2} MB/s ({:.1} ns/frame)",
+        "Protocol Frame Pack/Unpack Throughput",
+        micro.frame_pack_unpack_throughput_mb_s,
+        micro.frame_pack_latency_ns
+    );
+    println!(
+        "{:<45} | {:.0} coords/sec",
+        "Coordinate Sanitizer & Range Check", micro.coordinate_sanitizer_ops_per_sec
+    );
+    println!(
+        "{:<45} | {:.1}% event queue reduction",
+        "Input Event Coalescing Ratio", micro.input_coalescing_reduction_ratio_pct
+    );
+    println!("-------------------------------------------------------------------------------\n");
 
     println!("Standardized Workloads Evaluation (WL-01 to WL-10):");
     println!("-------------------------------------------------------------------------------");

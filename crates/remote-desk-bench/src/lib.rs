@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub mod empirical;
+pub use empirical::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkloadId {
     Wl01StaticDesktop,

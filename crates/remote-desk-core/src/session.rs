@@ -227,7 +227,8 @@ impl SessionStateMachine {
                 },
             ),
             (
-                SessionState::Active { .. }
+                SessionState::Disconnected
+                | SessionState::Active { .. }
                 | SessionState::Paused { .. }
                 | SessionState::Reconnecting { .. }
                 | SessionState::WaitingApproval { .. }

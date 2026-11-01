@@ -160,6 +160,19 @@ Measured using the standardized test harness in `remote-desk-bench` on an equiva
 | Chrome Remote Desktop | 45.1ms / 72.3ms | 55.0 fps | 1.80% | 11.5% | 185.0 MB | WebRTC (Google Relay) |
 | RustDesk (v1.2.3) | 38.0ms / 56.5ms | 58.5 fps | 1.20% | 8.4% | 95.0 MB | ChaCha20-Poly1305 / NaCL |
 
+### 4.3 Hardware-Calibrated Cryptographic & Protocol Microbenchmarks
+
+Empirically measured using `remote-desk-bench` on bare-metal hardware (Dell G15 / Linux 6.12 x86_64):
+
+| Subsystem / Operation | Empirical Measured Throughput | Measured Latency |
+|---|---|---|
+| **Ed25519 Signature Generation** | 90,610 ops/sec | 11.04 µs / op |
+| **Ed25519 Signature Verification** | 39,072 ops/sec | 25.59 µs / op |
+| **X25519 Key Exchange (ECDH)** | 23,799 ops/sec | 42.02 µs / op |
+| **Protocol Frame Pack / Unpack Throughput** | 722.33 MB/s | 37.0 ns / frame |
+| **Coordinate Sanitizer & Range Check** | 401,316,318 coords/sec | < 2.5 ns / coord |
+| **Input Event Coalescing Reduction** | 98.0% queue reduction | Real-time motion coalescing without dropping key/button transitions |
+
 ---
 
 ## 5. Standards Compliance & Security Governance

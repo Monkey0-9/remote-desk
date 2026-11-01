@@ -1,6 +1,7 @@
 use remote_desk_core::DeviceIdentity;
 use remote_desk_host::{HostConfig, HostService};
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -23,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut backend_choice = "auto".to_string();
     let mut _display: Option<String> = None;
     let mut _session_portal = false;
+    let mut custom_key_path: Option<PathBuf> = None;
 
     // Lightweight argument parsing without external CLI dependencies
     let args: Vec<String> = env::args().collect();
@@ -53,6 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--signal-server" => {
                 if i + 1 < args.len() {
                     config.signal_server_url = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--key" => {
+                if i + 1 < args.len() {
+                    custom_key_path = Some(PathBuf::from(&args[i + 1]));
                     i += 1;
                 }
             }
@@ -90,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 println!("  --bind <ADDR>            Signaling / listening address (default: 127.0.0.1:4443)");
                 println!("  --signal-server <URL>    Rendezvous broker URL");
+                println!("  --key <PATH>             Path to persistent private identity key (default: ~/.config/remote-desk/identity.key)");
                 println!("  --display <DISPLAY>      Target display identifier (e.g. :0)");
                 println!(
                     "  --session-portal         Use Wayland XDG Desktop Portal ScreenCast session"
@@ -107,7 +116,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    let identity = DeviceIdentity::generate();
+    // Determine persistent identity path
+    let default_key_path = {
+        let home = env::var("HOME")
+            .or_else(|_| env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home)
+            .join(".config")
+            .join("remote-desk")
+            .join("identity.key")
+    };
+    let key_file = custom_key_path.unwrap_or(default_key_path);
+
+    let identity = DeviceIdentity::load_or_generate(&key_file)?;
+    info!(
+        "Persistent identity active from [{}], fingerprint: {}",
+        key_file.display(),
+        identity.fingerprint_hex()
+    );
+
     let host = match backend_choice.as_str() {
         "linux" => HostService::new_linux(identity, config.clone()),
         "windows" => HostService::new_windows(identity, config.clone()),
