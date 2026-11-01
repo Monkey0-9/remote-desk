@@ -29,6 +29,9 @@ pub enum ProtoError {
 
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    #[error("Replay or duplicate sequence number: {0}")]
+    ReplayDetected(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +96,62 @@ impl FrameHeader {
         buf[3] = self.msg_type as u8;
         BigEndian::write_u64(&mut buf[4..12], self.sequence);
         BigEndian::write_u32(&mut buf[12..16], self.payload_len);
+    }
+}
+
+/// Sliding window sequence tracker (RFC 6479 / IPsec style) for replay protection
+#[derive(Debug, Clone)]
+pub struct SequenceWindowTracker {
+    max_seq: u64,
+    window_mask: u64,
+    window_size: u64,
+}
+
+impl SequenceWindowTracker {
+    pub fn new(window_size: u64) -> Self {
+        let size = window_size.clamp(1, 64);
+        Self {
+            max_seq: 0,
+            window_mask: 0,
+            window_size: size,
+        }
+    }
+
+    /// Returns true if sequence number is fresh and valid, false if replay/duplicate or too old
+    pub fn validate_and_update(&mut self, seq: u64) -> bool {
+        if seq == 0 {
+            return false;
+        }
+
+        if seq > self.max_seq {
+            let diff = seq - self.max_seq;
+            if diff >= self.window_size {
+                self.window_mask = 1;
+            } else {
+                self.window_mask = (self.window_mask << diff) | 1;
+            }
+            self.max_seq = seq;
+            true
+        } else {
+            let diff = self.max_seq - seq;
+            if diff >= self.window_size {
+                // Packet too old, outside window
+                false
+            } else {
+                let bit = 1u64 << diff;
+                if (self.window_mask & bit) != 0 {
+                    // Already seen this packet
+                    false
+                } else {
+                    self.window_mask |= bit;
+                    true
+                }
+            }
+        }
+    }
+
+    pub fn max_sequence(&self) -> u64 {
+        self.max_seq
     }
 }
 

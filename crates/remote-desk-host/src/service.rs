@@ -33,6 +33,8 @@ pub enum HostError {
     Proto(String),
     #[error("Network error: {0}")]
     Net(String),
+    #[error("Cryptographic error: {0}")]
+    Crypto(String),
     #[error("Handshake rejected or SAS mismatch")]
     AuthenticationFailed,
 }
@@ -246,7 +248,9 @@ impl HostService {
         // Perform ephemeral Diffie-Hellman key exchange
         let host_exchange = EphemeralKeyExchange::new();
         let host_ephemeral_pubkey = host_exchange.public_key_bytes();
-        let shared_secret = host_exchange.compute_shared_secret(peer_ephemeral_pubkey);
+        let shared_secret = host_exchange
+            .compute_shared_secret(peer_ephemeral_pubkey)
+            .map_err(|e| HostError::Crypto(format!("Key exchange failed: {:?}", e)))?;
 
         // Derive SAS verification code
         let host_pubkey = self.identity.public_key_bytes();

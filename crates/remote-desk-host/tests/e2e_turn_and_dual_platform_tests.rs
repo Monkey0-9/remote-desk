@@ -166,8 +166,9 @@ async fn test_e2e_host_session_with_sas_mutual_pairing() {
     assert_eq!(handshake_resp.sas_code.len(), 7); // Format: "XXX-XXX"
 
     // 2. Client receives host ephemeral public key and computes shared secret
-    let client_shared =
-        client_exchange.compute_shared_secret(&handshake_resp.host_ephemeral_pubkey);
+    let client_shared = client_exchange
+        .compute_shared_secret(&handshake_resp.host_ephemeral_pubkey)
+        .expect("client shared secret");
     let client_sas = compute_sas_code(
         &client_shared,
         &client_identity.public_key_bytes(),

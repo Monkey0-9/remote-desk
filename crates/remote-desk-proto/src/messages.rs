@@ -71,6 +71,35 @@ pub struct MouseMoveAbsPayload {
     pub y: f32, // Normalized 0.0 .. 1.0
 }
 
+impl MouseMoveAbsPayload {
+    /// Validates that coordinates are finite and bounded in 0.0..=1.0
+    pub fn is_valid(&self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && (0.0..=1.0).contains(&self.x)
+            && (0.0..=1.0).contains(&self.y)
+    }
+
+    /// Clamps coordinates safely into 0.0..=1.0
+    pub fn clamped(&self) -> Self {
+        let x = if self.x.is_nan() {
+            0.0
+        } else {
+            self.x.clamp(0.0, 1.0)
+        };
+        let y = if self.y.is_nan() {
+            0.0
+        } else {
+            self.y.clamp(0.0, 1.0)
+        };
+        Self {
+            monitor_id: self.monitor_id,
+            x,
+            y,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MouseMoveRelPayload {
     pub dx: i16,
@@ -94,6 +123,30 @@ pub struct KeyboardKeyPayload {
     pub scancode: u32,
     pub state: KeyState,
     pub modifiers: u32, // Bitmask: Shift=1, Ctrl=2, Alt=4, Meta=8
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TouchGesturePayload {
+    pub touch_id: u32,
+    pub phase: u8, // 0=Down, 1=Move, 2=Up, 3=Cancel
+    pub x: f32,    // Normalized 0.0 .. 1.0
+    pub y: f32,    // Normalized 0.0 .. 1.0
+    pub pressure: f32,
+}
+
+impl TouchGesturePayload {
+    pub fn is_valid(&self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && (0.0..=1.0).contains(&self.x)
+            && (0.0..=1.0).contains(&self.y)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipboardDataPayload {
+    pub mime_type: String,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,9 +203,11 @@ pub enum RemoteDeskMessage {
     MouseButton(MouseButtonPayload),
     MouseWheel(MouseWheelPayload),
     KeyboardKey(KeyboardKeyPayload),
+    TouchGesture(TouchGesturePayload),
     DisplayTopology(DisplayTopologyPayload),
     SelectMonitor(SelectMonitorPayload),
     QualityConfig(QualityConfigPayload),
+    ClipboardData(ClipboardDataPayload),
     Ping(PingPayload),
     Pong(PongPayload),
     Disconnect(DisconnectPayload),
@@ -166,9 +221,11 @@ impl RemoteDeskMessage {
             RemoteDeskMessage::MouseButton(_) => MessageType::MouseButton,
             RemoteDeskMessage::MouseWheel(_) => MessageType::MouseWheel,
             RemoteDeskMessage::KeyboardKey(_) => MessageType::KeyboardKey,
+            RemoteDeskMessage::TouchGesture(_) => MessageType::TouchGesture,
             RemoteDeskMessage::DisplayTopology(_) => MessageType::DisplayTopology,
             RemoteDeskMessage::SelectMonitor(_) => MessageType::SelectMonitor,
             RemoteDeskMessage::QualityConfig(_) => MessageType::QualityConfig,
+            RemoteDeskMessage::ClipboardData(_) => MessageType::ClipboardData,
             RemoteDeskMessage::Ping(_) => MessageType::Ping,
             RemoteDeskMessage::Pong(_) => MessageType::Pong,
             RemoteDeskMessage::Disconnect(_) => MessageType::Disconnect,

@@ -42,10 +42,14 @@ fn test_ephemeral_diffie_hellman_and_sas_agreement() {
     let bob_pub = bob_exchange.public_key_bytes();
 
     // Alice computes shared secret using Bob's ephemeral pubkey
-    let alice_shared = alice_exchange.compute_shared_secret(&bob_pub);
+    let alice_shared = alice_exchange
+        .compute_shared_secret(&bob_pub)
+        .expect("alice shared secret");
 
     // Bob computes shared secret using Alice's ephemeral pubkey
-    let bob_shared = bob_exchange.compute_shared_secret(&alice_pub);
+    let bob_shared = bob_exchange
+        .compute_shared_secret(&alice_pub)
+        .expect("bob shared secret");
 
     // Shared secret must match perfectly
     assert_eq!(alice_shared, bob_shared);

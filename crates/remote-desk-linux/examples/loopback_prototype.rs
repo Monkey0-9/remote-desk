@@ -33,8 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host_pub = host_exchange.public_key_bytes();
     let controller_pub = controller_exchange.public_key_bytes();
 
-    let host_shared = host_exchange.compute_shared_secret(&controller_pub);
-    let controller_shared = controller_exchange.compute_shared_secret(&host_pub);
+    let host_shared = host_exchange
+        .compute_shared_secret(&controller_pub)
+        .expect("host shared secret");
+    let controller_shared = controller_exchange
+        .compute_shared_secret(&host_pub)
+        .expect("controller shared secret");
 
     assert_eq!(host_shared, controller_shared, "Shared secrets must match");
 
