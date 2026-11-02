@@ -63,7 +63,7 @@ impl Default for HostConfig {
             device_name: "RemoteDesk-Host".to_string(),
             unattended: false,
             bind_addr: "127.0.0.1:4443".to_string(),
-            signal_server_url: Some("http://127.0.0.1:4443/signal".to_string()),
+            signal_server_url: None,
             turn_servers: IceServerConfig::default_stun_servers(),
         }
     }
@@ -439,7 +439,7 @@ impl HostService {
     ) -> Result<(), HostError> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let mut init_buf = vec![0u8; 1024];
+        let mut init_buf = vec![0u8; 4096];
         let n = socket
             .read(&mut init_buf)
             .await
@@ -449,10 +449,68 @@ impl HostService {
         }
 
         let req_str = String::from_utf8_lossy(&init_buf[..n]);
-        if req_str.starts_with("GET /health") {
-            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}";
-            let _ = socket.write_all(resp.as_bytes()).await;
-            return Ok(());
+
+        // Sniff and handle HTTP requests (Web dashboard, health probes, readiness checks)
+        let is_http = req_str.starts_with("GET ")
+            || req_str.starts_with("POST ")
+            || req_str.starts_with("HEAD ")
+            || req_str.starts_with("OPTIONS ");
+
+        if is_http {
+            let first_line = req_str.lines().next().unwrap_or("");
+            let parts: Vec<&str> = first_line.split_whitespace().collect();
+            let raw_path = parts.get(1).copied().unwrap_or("/");
+            let path = raw_path.split('?').next().unwrap_or("/");
+
+            match path {
+                "/health" | "/ready" => {
+                    let body = format!(
+                        "{{\"status\":\"ok\",\"device_id\":\"{}\"}}",
+                        self.device_id()
+                    );
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return Ok(());
+                }
+                "/api/info" | "/info" | "/status" => {
+                    let body = serde_json::json!({
+                        "status": "ready",
+                        "device_id": self.device_id(),
+                        "device_name": self.config.device_name,
+                        "unattended": self.config.unattended,
+                        "fingerprint": self.identity.fingerprint_hex(),
+                        "public_key": self.identity.public_key_hex(),
+                        "bind_addr": self.config.bind_addr,
+                    })
+                    .to_string();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return Ok(());
+                }
+                "/favicon.ico" => {
+                    let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return Ok(());
+                }
+                _ => {
+                    let html = self.generate_host_portal_html();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return Ok(());
+                }
+            }
         }
 
         #[derive(serde::Deserialize)]
@@ -661,7 +719,7 @@ impl HostService {
                             drop(sm);
 
                             if let Err(e) = self.handle_client_session(socket, peer_addr).await {
-                                warn!("Session error from {}: {:?}", peer_addr, e);
+                                debug!("Session notice from {}: {:?}", peer_addr, e);
                             }
                         }
                         Err(e) => {
@@ -684,6 +742,286 @@ impl HostService {
         self.terminate_session("Daemon stopping").await?;
         Ok(())
     }
+
+    /// Generates modern, dark-themed responsive HTML status portal for web browser visitors
+    pub fn generate_host_portal_html(&self) -> String {
+        let device_id = html_escape(&self.device_id());
+        let device_name = html_escape(&self.config.device_name);
+        let bind_addr = html_escape(&self.config.bind_addr);
+        let fingerprint = html_escape(&self.identity.fingerprint_hex());
+        let unattended_text = if self.config.unattended {
+            "<span style=\"color:#10b981;font-weight:600;\">Enabled (Auto-Approve)</span>"
+        } else {
+            "<span style=\"color:#f59e0b;font-weight:600;\">Disabled (Manual Host SAS Confirmation)</span>"
+        };
+
+        format!(
+            r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote-Desk Host Streaming Node</title>
+    <style>
+        :root {{
+            --bg: #090d16;
+            --surface: #111827;
+            --border: #1f2937;
+            --text: #f3f4f6;
+            --text-dim: #9ca3af;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.15);
+            --success: #10b981;
+            --mono-bg: #1e293b;
+        }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2.5rem 1rem;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }}
+        .container {{
+            width: 100%;
+            max-width: 800px;
+        }}
+        header {{
+            margin-bottom: 2rem;
+            text-align: center;
+        }}
+        .badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 9999px;
+            padding: 0.35rem 0.85rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }}
+        .pulse-dot {{
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--success);
+        }}
+        h1 {{
+            font-size: 2.25rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.025em;
+        }}
+        .subtitle {{
+            color: var(--text-dim);
+            font-size: 1rem;
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }}
+        @media (min-width: 640px) {{
+            .grid {{ grid-template-columns: 1fr 1fr; }}
+            .grid-full {{ grid-column: span 2; }}
+        }}
+        .card {{
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }}
+        .card h2 {{
+            font-size: 1.125rem;
+            color: #ffffff;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+        .field {{
+            margin-bottom: 1rem;
+        }}
+        .field:last-child {{
+            margin-bottom: 0;
+        }}
+        .label {{
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            margin-bottom: 0.25rem;
+        }}
+        .value {{
+            font-size: 0.95rem;
+            font-weight: 500;
+        }}
+        .mono {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            background: var(--mono-bg);
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: var(--accent);
+            word-break: break-all;
+            display: inline-block;
+        }}
+        .guide-step {{
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            align-items: flex-start;
+        }}
+        .guide-step:last-child {{
+            margin-bottom: 0;
+        }}
+        .step-num {{
+            background: var(--accent-glow);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }}
+        .step-text {{
+            color: var(--text-dim);
+            font-size: 0.95rem;
+        }}
+        .step-text strong {{
+            color: var(--text);
+        }}
+        footer {{
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.875rem;
+            border-top: 1px solid var(--border);
+            padding-top: 1.5rem;
+            width: 100%;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="badge">
+                <span class="pulse-dot"></span>
+                ACTIVE STREAMING NODE
+            </div>
+            <h1>Remote-Desk Host</h1>
+            <p class="subtitle">Secure, Zero-Trust Hardware-Accelerated Remote Desktop Daemon</p>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <h2>Host Identification</h2>
+                <div class="field">
+                    <div class="label">Device ID</div>
+                    <div class="mono" style="font-size: 1.1rem; font-weight: 700;">{device_id}</div>
+                </div>
+                <div class="field">
+                    <div class="label">Host Name</div>
+                    <div class="value">{device_name}</div>
+                </div>
+                <div class="field">
+                    <div class="label">Unattended Mode</div>
+                    <div class="value">{unattended_text}</div>
+                </div>
+                <div class="field">
+                    <div class="label">Fingerprint</div>
+                    <div class="mono" style="font-size: 0.75rem;">{fingerprint}</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Networking & Security</h2>
+                <div class="field">
+                    <div class="label">Listener Address</div>
+                    <div class="mono">{bind_addr}</div>
+                </div>
+                <div class="field">
+                    <div class="label">Cryptographic Protocol</div>
+                    <div class="value">Ed25519 PoP + X25519 Ephemeral DH</div>
+                </div>
+                <div class="field">
+                    <div class="label">Pairing Verification</div>
+                    <div class="value">HKDF SAS Code & Sliding Replay Window</div>
+                </div>
+                <div class="field">
+                    <div class="label">API Endpoints</div>
+                    <div class="value">
+                        <a href="/health" style="color: var(--accent); text-decoration: none;">/health</a> &bull; 
+                        <a href="/api/info" style="color: var(--accent); text-decoration: none;">/api/info</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card grid-full">
+                <h2>Client Connection Guide</h2>
+                <div class="guide-step">
+                    <div class="step-num">1</div>
+                    <div class="step-text">
+                        Launch the <strong>Remote-Desk Android app</strong> or compatible client on your local network.
+                    </div>
+                </div>
+                <div class="guide-step">
+                    <div class="step-num">2</div>
+                    <div class="step-text">
+                        Enter target Host Device ID <code class="mono">{device_id}</code> or direct host address <code class="mono">{bind_addr}</code>.
+                    </div>
+                </div>
+                <div class="guide-step">
+                    <div class="step-num">3</div>
+                    <div class="step-text">
+                        Verify the Short Authentication String (SAS) code matching on both screens for tamper-proof pairing.
+                    </div>
+                </div>
+                <div class="guide-step">
+                    <div class="step-num">4</div>
+                    <div class="step-text">
+                        Once authorized, low-latency desktop video streaming and input control initialize instantly.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            Remote-Desk v0.1.0 &bull; Built with Rust &bull; End-to-End Authenticated
+        </footer>
+    </div>
+</body>
+</html>"#,
+            device_id = device_id,
+            device_name = device_name,
+            unattended_text = unattended_text,
+            fingerprint = fingerprint,
+            bind_addr = bind_addr
+        )
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn decode_hex_32(s: &str) -> Option<[u8; 32]> {

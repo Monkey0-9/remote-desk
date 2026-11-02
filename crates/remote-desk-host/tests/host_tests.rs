@@ -188,3 +188,109 @@ async fn test_host_auto_backend_selection() {
     let monitors = host.enumerate_monitors().await.unwrap();
     assert!(!monitors.is_empty());
 }
+
+#[tokio::test]
+async fn test_host_http_web_portal_and_status_endpoints() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let port = 19998;
+    let bind_addr = format!("127.0.0.1:{}", port);
+
+    let identity = DeviceIdentity::generate();
+    let expected_device_id = identity.device_id();
+    let config = HostConfig {
+        bind_addr: bind_addr.clone(),
+        device_name: "Portal-Test-Host".to_string(),
+        unattended: false,
+        signal_server_url: None,
+        turn_servers: vec![],
+    };
+
+    let host = HostService::new_mock(identity, config);
+    let host_arc = std::sync::Arc::new(host);
+    let host_daemon = host_arc.clone();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let daemon_task = tokio::spawn(async move {
+        let _ = host_daemon.run_daemon(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 1. Test GET / returns 200 OK with HTML Portal containing device_id
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("Content-Type: text/html"));
+        assert!(resp.contains(&expected_device_id));
+        assert!(resp.contains("Remote-Desk Host"));
+    }
+
+    // 2. Test GET /signal returns 200 OK with HTML Portal
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /signal HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("Content-Type: text/html"));
+    }
+
+    // 3. Test GET /health returns 200 OK JSON
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("application/json"));
+        assert!(resp.contains("\"status\":\"ok\""));
+    }
+
+    // 4. Test GET /api/info returns 200 OK JSON
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /api/info HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("application/json"));
+        assert!(resp.contains(&expected_device_id));
+        assert!(resp.contains("Portal-Test-Host"));
+    }
+
+    // 5. Test GET /favicon.ico returns 204 No Content
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 204 No Content"));
+    }
+
+    let _ = shutdown_tx.send(());
+    let _ = daemon_task.await;
+}
