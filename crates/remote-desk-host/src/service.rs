@@ -637,6 +637,53 @@ impl HostService {
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return Ok(());
                 }
+                "/api/qrcode" => {
+                    let payload = if raw_path.contains("payload=") {
+                        let query = raw_path.split('?').nth(1).unwrap_or("");
+                        let encoded = query
+                            .split('&')
+                            .find(|kv| kv.starts_with("payload="))
+                            .and_then(|kv| kv.strip_prefix("payload="))
+                            .unwrap_or("");
+                        url_decode(encoded)
+                    } else if raw_path.contains("uri=") {
+                        let query = raw_path.split('?').nth(1).unwrap_or("");
+                        let encoded = query
+                            .split('&')
+                            .find(|kv| kv.starts_with("uri="))
+                            .and_then(|kv| kv.strip_prefix("uri="))
+                            .unwrap_or("");
+                        url_decode(encoded)
+                    } else {
+                        let ifaces = crate::interfaces::discover_network_interfaces();
+                        let primary_ip = ifaces
+                            .iter()
+                            .find(|i| !i.is_loopback)
+                            .map(|i| i.ip.clone())
+                            .unwrap_or_else(|| "127.0.0.1".to_string());
+                        let port = self
+                            .config
+                            .bind_addr
+                            .split(':')
+                            .next_back()
+                            .unwrap_or("4443");
+                        format!(
+                            "remotedesk://{}:{}?id={}",
+                            primary_ip,
+                            port,
+                            self.device_id()
+                        )
+                    };
+
+                    let svg = generate_qr_svg(&payload);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        svg.len(),
+                        svg
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return Ok(());
+                }
                 "/favicon.ico" => {
                     let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
                     let _ = socket.write_all(resp.as_bytes()).await;
@@ -1029,6 +1076,25 @@ impl HostService {
         } else {
             "<span style=\"color:#f59e0b;font-weight:600;\">Disabled (Manual Host SAS Confirmation)</span>"
         };
+        let ifaces = crate::interfaces::discover_network_interfaces();
+        let primary_ip = ifaces
+            .iter()
+            .find(|i| !i.is_loopback)
+            .map(|i| i.ip.clone())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = self
+            .config
+            .bind_addr
+            .split(':')
+            .next_back()
+            .unwrap_or("4443");
+        let qr_uri = format!(
+            "remotedesk://{}:{}?id={}",
+            primary_ip,
+            port,
+            self.device_id()
+        );
+        let qr_svg = generate_qr_svg(&qr_uri);
 
         format!(
             r#"<!DOCTYPE html>
@@ -1226,6 +1292,16 @@ impl HostService {
                 </div>
             </div>
 
+            <div class="card" style="text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                <h2>Scan to Connect</h2>
+                <div style="background: #ffffff; padding: 12px; border-radius: 12px; display: inline-block; margin: 0.5rem 0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); max-width: 224px;">
+                    {qr_svg}
+                </div>
+                <div class="label" style="margin-top: 0.5rem;">Direct Connection URI</div>
+                <div class="mono" style="font-size: 0.85rem; margin-top: 0.25rem;">{qr_uri}</div>
+                <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 0.5rem;">Point camera or Remote-Desk app to pair</div>
+            </div>
+
             <div class="card">
                 <h2>Networking & Security</h2>
                 <div class="field">
@@ -1244,7 +1320,8 @@ impl HostService {
                     <div class="label">API Endpoints</div>
                     <div class="value">
                         <a href="/health" style="color: var(--accent); text-decoration: none;">/health</a> &bull; 
-                        <a href="/api/info" style="color: var(--accent); text-decoration: none;">/api/info</a>
+                        <a href="/api/info" style="color: var(--accent); text-decoration: none;">/api/info</a> &bull; 
+                        <a href="/api/qrcode" style="color: var(--accent); text-decoration: none;">/api/qrcode</a>
                     </div>
                 </div>
             </div>
@@ -1288,9 +1365,47 @@ impl HostService {
             device_name = device_name,
             unattended_text = unattended_text,
             fingerprint = fingerprint,
-            bind_addr = bind_addr
+            bind_addr = bind_addr,
+            qr_svg = qr_svg,
+            qr_uri = qr_uri
         )
     }
+}
+
+/// Generates an authentic, self-contained SVG QR code for pairing and direct client connections
+pub fn generate_qr_svg(content: &str) -> String {
+    use qrcode::render::svg;
+    use qrcode::QrCode;
+
+    match QrCode::new(content.as_bytes()) {
+        Ok(code) => code
+            .render::<svg::Color>()
+            .min_dimensions(190, 190)
+            .dark_color(svg::Color("#0a0f1d"))
+            .light_color(svg::Color("#ffffff"))
+            .build(),
+        Err(_) => r##"<svg xmlns="http://www.w3.org/2000/svg" width="190" height="190"><rect width="190" height="190" fill="#fee2e2"/><text x="15" y="100" fill="#991b1b" font-family="sans-serif" font-size="13">QR Generation Error</text></svg>"##.to_string(),
+    }
+}
+
+pub fn url_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut bytes = s.bytes();
+    while let Some(b) = bytes.next() {
+        match b {
+            b'%' => {
+                let h1 = bytes.next().unwrap_or(b'0');
+                let h2 = bytes.next().unwrap_or(b'0');
+                let hex_str = format!("{}{}", h1 as char, h2 as char);
+                if let Ok(val) = u8::from_str_radix(&hex_str, 16) {
+                    result.push(val as char);
+                }
+            }
+            b'+' => result.push(' '),
+            other => result.push(other as char),
+        }
+    }
+    result
 }
 
 fn html_escape(s: &str) -> String {

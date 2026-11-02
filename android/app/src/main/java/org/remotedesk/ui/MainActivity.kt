@@ -1,5 +1,6 @@
 package org.remotedesk.ui
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
@@ -29,6 +31,7 @@ import org.remotedesk.data.SavedDevice
 import org.remotedesk.input.GestureRecognizer
 import org.remotedesk.input.InputMode
 import org.remotedesk.net.ConnectionState
+import org.remotedesk.net.ConnectionUriParser
 import org.remotedesk.net.WebRtcSessionManager
 import org.remotedesk.security.SecureKeyStore
 import java.io.File
@@ -46,6 +49,7 @@ enum class ConnectionStage {
 class MainActivity : ComponentActivity() {
     private lateinit var keyStore: SecureKeyStore
     private lateinit var deviceRepository: DeviceRepository
+    private var initialDeepLinkUri by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +60,8 @@ class MainActivity : ComponentActivity() {
         val dataDir = File(filesDir, "data")
         deviceRepository = PersistentDeviceRepository(File(dataDir, "saved_devices.txt"))
 
+        intent?.dataString?.let { initialDeepLinkUri = it }
+
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -65,41 +71,54 @@ class MainActivity : ComponentActivity() {
                     background = Color(0xFF0F172A)
                 )
             ) {
-                RemoteDeskApp(keyStore, deviceRepository)
+                RemoteDeskApp(keyStore, deviceRepository, initialDeepLinkUri)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        intent?.dataString?.let { initialDeepLinkUri = it }
     }
 }
 
 @Composable
-fun RemoteDeskApp(keyStore: SecureKeyStore, deviceRepository: DeviceRepository) {
+fun RemoteDeskApp(
+    keyStore: SecureKeyStore,
+    deviceRepository: DeviceRepository,
+    initialDeepLinkUri: String? = null
+) {
     val navController = rememberNavController()
     var selectedDeviceId by remember { mutableStateOf("") }
     var activeClient by remember { mutableStateOf<WebRtcSessionManager?>(null) }
 
+    LaunchedEffect(initialDeepLinkUri) {
+        if (!initialDeepLinkUri.isNullOrBlank()) {
+            navController.navigate("add_computer")
+        }
+    }
+
     fun connectToDevice(id: String) {
         selectedDeviceId = id
         val dev = deviceRepository.getDevice(id)
-        val rawAddress = dev?.address ?: "127.0.0.1"
-        val isSignaling = rawAddress.startsWith("ws://") || rawAddress.startsWith("wss://") || rawAddress == "signaling:rendezvous"
+        val rawAddress = dev?.address ?: id
+        val parsed = ConnectionUriParser.parse(rawAddress, defaultId = id)
 
         val controllerId = keyStore.getDeviceId()
-        val client = if (isSignaling) {
-            val sigUrl = if (rawAddress == "signaling:rendezvous") "ws://127.0.0.1:4443" else rawAddress
+        val client = if (parsed.isSignaling) {
+            val sigUrl = if (parsed.host == "signaling:rendezvous") "ws://127.0.0.1:4443" else parsed.host
             WebRtcSessionManager(
                 deviceId = controllerId,
-                targetHostId = id,
+                targetHostId = parsed.targetHostId,
                 signalingUrl = sigUrl,
                 keyStore = keyStore
             )
         } else {
-            val host = if (rawAddress.contains(":")) rawAddress.substringBefore(":") else rawAddress
-            val port = if (rawAddress.contains(":")) rawAddress.substringAfter(":").toIntOrNull() ?: 4443 else 4443
             WebRtcSessionManager(
                 deviceId = controllerId,
-                targetHostId = id,
-                hostAddress = host,
-                hostPort = port,
+                targetHostId = parsed.targetHostId,
+                hostAddress = parsed.host,
+                hostPort = parsed.port,
                 keyStore = keyStore
             )
         }
@@ -121,6 +140,7 @@ fun RemoteDeskApp(keyStore: SecureKeyStore, deviceRepository: DeviceRepository) 
         composable("add_computer") {
             AddComputerScreen(
                 repository = deviceRepository,
+                initialTargetUri = initialDeepLinkUri,
                 onPairInitiated = { id -> connectToDevice(id) },
                 onBack = { navController.popBackStack() }
             )
@@ -284,12 +304,33 @@ fun DevicesScreen(
 @Composable
 fun AddComputerScreen(
     repository: DeviceRepository,
+    initialTargetUri: String? = null,
     onPairInitiated: (String) -> Unit,
     onBack: () -> Unit
 ) {
+    val clipboardManager = LocalClipboardManager.current
     var computerName by remember { mutableStateOf("") }
     var deviceIdOrAddress by remember { mutableStateOf("") }
     var isDirectIp by remember { mutableStateOf(false) }
+    var parseStatus by remember { mutableStateOf<String?>(null) }
+
+    fun applyParsed(input: String) {
+        val text = input.trim()
+        if (text.isBlank()) return
+        val parsed = ConnectionUriParser.parse(text)
+        deviceIdOrAddress = parsed.rawCleanAddress
+        if (parsed.friendlyName.isNotBlank() && computerName.isBlank()) {
+            computerName = parsed.friendlyName
+        }
+        isDirectIp = !parsed.isSignaling
+        parseStatus = "✓ Configured: ${parsed.host}:${parsed.port} (${if (parsed.isSignaling) "Relay Broker" else "Direct LAN"})"
+    }
+
+    LaunchedEffect(initialTargetUri) {
+        if (!initialTargetUri.isNullOrBlank()) {
+            applyParsed(initialTargetUri)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -307,7 +348,7 @@ fun AddComputerScreen(
         ) {
             Text("Add Computer", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "Enter the 9-digit Device ID displayed on your host desktop, or enter its direct local IP address.",
+                "Scan the Host QR Code on your computer's screen, paste a remotedesk:// URI, or enter its direct local IP address.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray
             )
@@ -321,39 +362,72 @@ fun AddComputerScreen(
 
             OutlinedTextField(
                 value = deviceIdOrAddress,
-                onValueChange = { deviceIdOrAddress = it },
-                label = { Text(if (isDirectIp) "Direct Host IP / Hostname" else "Device ID (e.g. rd-1234-5678)") },
+                onValueChange = {
+                    deviceIdOrAddress = it
+                    if (it.contains("://") || it.startsWith("{") || it.contains("?")) {
+                        applyParsed(it)
+                    }
+                },
+                label = { Text(if (isDirectIp) "Direct Host IP / Hostname" else "Device ID / Host Address") },
                 modifier = Modifier.fillMaxWidth()
             )
+
+            if (parseStatus != null) {
+                Text(
+                    parseStatus ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF10B981)
+                )
+            }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = isDirectIp, onCheckedChange = { isDirectIp = it })
                 Text("Direct IP connection (bypasses signaling server)")
             }
 
-            Button(
-                onClick = {
-                    deviceIdOrAddress = "127.0.0.1:4443"
-                    computerName = "Dell G15 Linux Host"
-                    isDirectIp = true
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Scan Host QR Code (LAN Demo)")
+                Button(
+                    onClick = {
+                        val clip = clipboardManager.getText()?.text
+                        if (!clip.isNullOrBlank()) {
+                            applyParsed(clip)
+                        } else {
+                            parseStatus = "Clipboard is empty"
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Paste Scanned QR")
+                }
+
+                Button(
+                    onClick = {
+                        applyParsed("remotedesk://127.0.0.1:4443?id=rd-8623-8185&name=Localhost+Host")
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Localhost Demo")
+                }
             }
 
             Spacer(modifier = Modifier.weight(1f))
 
             Button(
                 onClick = {
-                    val id = deviceIdOrAddress.trim()
-                    val name = if (computerName.isBlank()) id else computerName.trim()
+                    val raw = deviceIdOrAddress.trim()
+                    val parsed = ConnectionUriParser.parse(raw)
+                    val id = if (parsed.targetHostId.isNotBlank()) parsed.targetHostId else parsed.host
+                    val name = if (computerName.isNotBlank()) computerName.trim() else parsed.friendlyName
                     val device = SavedDevice(
                         id = id,
                         name = name,
-                        osBadge = if (isDirectIp) "Direct LAN" else "Remote-Desk Relay",
-                        address = if (isDirectIp) id else "signaling:rendezvous",
+                        osBadge = if (!parsed.isSignaling) "Direct LAN" else "Remote-Desk Relay",
+                        address = parsed.rawCleanAddress,
                         isOnline = true
                     )
                     repository.addOrUpdateDevice(device)

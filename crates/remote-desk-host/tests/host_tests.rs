@@ -340,8 +340,32 @@ async fn test_host_http_web_portal_and_status_endpoints() {
         assert!(resp.contains("\"encode_latency_ms\""));
     }
 
+    // 9. Test GET /api/qrcode returns 200 OK image/svg+xml with valid SVG QR code
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /api/qrcode HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("image/svg+xml"));
+        assert!(resp.contains("<svg"));
+        assert!(resp.contains("</svg>"));
+    }
+
     let _ = shutdown_tx.send(());
     let _ = daemon_task.await;
+}
+
+#[test]
+fn test_qr_code_svg_generation() {
+    let svg = remote_desk_host::service::generate_qr_svg("remotedesk://192.168.1.50:4444");
+    assert!(svg.contains("<svg"));
+    assert!(svg.contains("</svg>"));
+    assert!(svg.len() > 100);
 }
 
 #[test]

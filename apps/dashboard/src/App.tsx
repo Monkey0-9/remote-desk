@@ -21,8 +21,10 @@ import {
   KeyValuePairs,
   ProgressBar,
   TextFilter,
+  SegmentedControl,
 } from '@cloudscape-design/components';
 import { applyMode, Mode, applyDensity, Density } from '@cloudscape-design/global-styles';
+import QRCode from 'qrcode';
 import {
   OverviewData,
   TrustedDevice,
@@ -142,6 +144,10 @@ export default function App() {
   const [pairDeviceName, setPairDeviceName] = useState('');
   const [pairStep, setPairStep] = useState<'request' | 'verify'>('request');
   const [isQuickConnectOpen, setIsQuickConnectOpen] = useState(false);
+  const [qrFormat, setQrFormat] = useState<string>('app');
+  const [selectedIp, setSelectedIp] = useState<string>('');
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrError, setQrError] = useState<string | null>(null);
   const [isEmergencyConfirmOpen, setIsEmergencyConfirmOpen] = useState(false);
   const [pingResult, setPingResult] = useState<string | null>(null);
   const [isPinging, setIsPinging] = useState(false);
@@ -467,8 +473,67 @@ export default function App() {
     return true;
   });
 
-  const primaryIp = overview.interfaces.find((i) => !i.is_loopback)?.ip || '192.168.1.11';
-  const connectionUri = `remotedesk://${primaryIp}:4443`;
+  const hostPort = overview.bind_addr.split(':').pop() || (window.location.port || '4443');
+  const primaryIp =
+    overview.interfaces.find((i) => !i.is_loopback)?.ip ||
+    (window.location.hostname !== 'localhost' && window.location.hostname !== ''
+      ? window.location.hostname
+      : '192.168.1.11');
+  const currentIp = selectedIp || primaryIp;
+
+  const connectionUri = `remotedesk://${currentIp}:${hostPort}`;
+  const webPortalUri = `http://${currentIp}:${hostPort}/`;
+  const rawAddressUri = `${currentIp}:${hostPort}`;
+  const jsonPayload = JSON.stringify({
+    scheme: 'remotedesk',
+    id: overview.device_id,
+    name: overview.device_name,
+    ip: currentIp,
+    port: parseInt(hostPort, 10) || 4443,
+    fingerprint: overview.fingerprint,
+  });
+
+  let activeQrPayload = connectionUri;
+  if (qrFormat === 'app-full') {
+    activeQrPayload = `remotedesk://${currentIp}:${hostPort}?id=${overview.device_id}&name=${encodeURIComponent(overview.device_name)}`;
+  } else if (qrFormat === 'web') {
+    activeQrPayload = webPortalUri;
+  } else if (qrFormat === 'raw') {
+    activeQrPayload = rawAddressUri;
+  } else if (qrFormat === 'json') {
+    activeQrPayload = jsonPayload;
+  }
+
+  useEffect(() => {
+    QRCode.toDataURL(activeQrPayload, {
+      width: 280,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: {
+        dark: '#0a0f1d',
+        light: '#ffffff',
+      },
+    })
+      .then((url) => {
+        setQrDataUrl(url);
+        setQrError(null);
+      })
+      .catch((err) => {
+        console.error('QR code generation failed:', err);
+        setQrError('Failed to generate QR code');
+      });
+  }, [activeQrPayload]);
+
+  const downloadQrCode = () => {
+    if (!qrDataUrl) return;
+    const a = document.createElement('a');
+    a.href = qrDataUrl;
+    a.download = `remotedesk-qr-${overview.device_id}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    copyToClipboard('', 'Downloaded QR code image');
+  };
 
   return (
     <div style={{ backgroundColor: 'var(--rd-bg-base)', minHeight: '100vh' }}>
@@ -1219,75 +1284,116 @@ export default function App() {
         visible={isQuickConnectOpen}
         onDismiss={() => setIsQuickConnectOpen(false)}
         header="Connect from Android or Web Controller"
+        size="medium"
         footer={
           <Box float="right">
-            <Button variant="primary" onClick={() => setIsQuickConnectOpen(false)}>
-              Done
-            </Button>
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button
+                variant="normal"
+                onClick={downloadQrCode}
+                disabled={!qrDataUrl}
+              >
+                Download QR (.png)
+              </Button>
+              <Button variant="primary" onClick={() => setIsQuickConnectOpen(false)}>
+                Done
+              </Button>
+            </SpaceBetween>
           </Box>
         }
       >
         <SpaceBetween size="l">
           <Box variant="p">
-            Open the Remote-Desk Android app or point your client browser to the reachable LAN endpoint below:
+            Scan this genuine QR code using the <strong>Remote-Desk Android app</strong> or your smartphone's camera (Google Lens, Samsung Camera, iOS Camera) to initiate instant pairing:
           </Box>
 
+          <FormField label="Target Protocol / Format">
+            <SegmentedControl
+              selectedId={qrFormat}
+              onChange={({ detail }) => setQrFormat(detail.selectedId)}
+              options={[
+                { text: 'App Connect (remotedesk://)', id: 'app' },
+                { text: 'App with Metadata', id: 'app-full' },
+                { text: 'Web Portal (http://)', id: 'web' },
+                { text: 'Pairing JSON', id: 'json' },
+              ]}
+            />
+          </FormField>
+
+          {overview.interfaces.length > 1 && (
+            <FormField label="Host Network Interface">
+              <Select
+                selectedOption={{
+                  label: `${currentIp} (${overview.interfaces.find((i) => i.ip === currentIp)?.name || 'Interface'})`,
+                  value: currentIp,
+                }}
+                onChange={({ detail }) => setSelectedIp(detail.selectedOption.value || '')}
+                options={overview.interfaces.map((iface) => ({
+                  label: `${iface.ip} — ${iface.name}`,
+                  value: iface.ip,
+                }))}
+              />
+            </FormField>
+          )}
+
           <Box textAlign="center">
-            {/* SVG Simulated QR Code */}
+            {/* Real, Validated Scannable QR Code */}
             <div
               style={{
                 display: 'inline-block',
                 padding: 16,
                 background: '#ffffff',
-                borderRadius: 12,
-                boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                borderRadius: 16,
+                boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
+                border: '1px solid var(--rd-border-subtle)',
               }}
             >
-              <svg width="180" height="180" viewBox="0 0 180 180" fill="none">
-                <rect width="180" height="180" fill="white" />
-                {/* Simulated QR Code matrix patterns */}
-                <rect x="15" y="15" width="45" height="45" rx="4" fill="#0f172a" />
-                <rect x="25" y="25" width="25" height="25" rx="2" fill="white" />
-                <rect x="32" y="32" width="11" height="11" fill="#0f172a" />
-
-                <rect x="120" y="15" width="45" height="45" rx="4" fill="#0f172a" />
-                <rect x="130" y="25" width="25" height="25" rx="2" fill="white" />
-                <rect x="137" y="32" width="11" height="11" fill="#0f172a" />
-
-                <rect x="15" y="120" width="45" height="45" rx="4" fill="#0f172a" />
-                <rect x="25" y="130" width="25" height="25" rx="2" fill="white" />
-                <rect x="32" y="137" width="11" height="11" fill="#0f172a" />
-
-                {/* Data dots */}
-                <rect x="75" y="20" width="12" height="12" fill="#0f172a" />
-                <rect x="95" y="20" width="12" height="12" fill="#0f172a" />
-                <rect x="75" y="40" width="12" height="12" fill="#0f172a" />
-                <rect x="20" y="75" width="12" height="12" fill="#0f172a" />
-                <rect x="40" y="75" width="12" height="12" fill="#0f172a" />
-                <rect x="75" y="75" width="30" height="30" rx="4" fill="#3b82f6" />
-                <rect x="120" y="75" width="12" height="12" fill="#0f172a" />
-                <rect x="145" y="75" width="12" height="12" fill="#0f172a" />
-                <rect x="75" y="120" width="12" height="12" fill="#0f172a" />
-                <rect x="95" y="135" width="12" height="12" fill="#0f172a" />
-                <rect x="120" y="120" width="12" height="12" fill="#0f172a" />
-                <rect x="140" y="140" width="25" height="25" fill="#0f172a" />
-              </svg>
+              {qrDataUrl ? (
+                <img
+                  src={qrDataUrl}
+                  alt={`Scan to connect: ${activeQrPayload}`}
+                  width={240}
+                  height={240}
+                  style={{ display: 'block', borderRadius: 8 }}
+                />
+              ) : (
+                <Box padding="xxl" textAlign="center">
+                  <StatusIndicator type="loading">Generating QR Code...</StatusIndicator>
+                </Box>
+              )}
             </div>
+            {qrError && (
+              <Box margin={{ top: 's' }}>
+                <Alert type="error">{qrError}</Alert>
+              </Box>
+            )}
           </Box>
 
           <Box textAlign="center">
             <span
               className="copy-badge-btn"
-              onClick={() => copyToClipboard(connectionUri, 'Connection URI')}
+              onClick={() => copyToClipboard(activeQrPayload, 'Connection URI')}
+              title="Click to copy to clipboard"
             >
-              <Box variant="h2" color="text-status-info">
-                {connectionUri} 📋
-              </Box>
+              <span style={{ wordBreak: 'break-all', display: 'inline-block' }}>
+                <Box variant="h3" color="text-status-info">
+                  {activeQrPayload} 📋
+                </Box>
+              </span>
             </span>
-            <Box variant="small" color="text-body-secondary">
-              Click URI to copy to clipboard
+            <Box variant="small" color="text-body-secondary" margin={{ top: 'xs' }}>
+              Click payload above to copy to clipboard &bull; Encoded dynamically in real-time
             </Box>
           </Box>
+
+          <Alert statusIconAriaLabel="Info" type="info">
+            <SpaceBetween size="xxs">
+              <Box variant="strong">Pairing & Security Notice:</Box>
+              <Box variant="small">
+                When connecting for the first time, your screen will display a 6-character Short Authentication String (SAS). Verify that both host and mobile controller display matching characters to guarantee an end-to-end authenticated, tamper-proof session.
+              </Box>
+            </SpaceBetween>
+          </Alert>
         </SpaceBetween>
       </Modal>
 
