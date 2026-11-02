@@ -239,3 +239,25 @@ jobs:
         run: |
           sha256sum Cargo.lock README.md > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+  # 17. Host Management Dashboard Build & Verification
+  dashboard-build:
+    name: 17. Host Management Dashboard Build & Bundle Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Dashboard Dependencies
+        run: cd apps/dashboard && npm ci
+      - name: Build Production Cloudscape Dashboard
+        run: cd apps/dashboard && npm run build
+      - name: Verify Dashboard Distribution Assets
+        run: |
+          test -f apps/dashboard/dist/index.html
+          test -d apps/dashboard/dist/assets
+          test -f apps/dashboard/dist/assets/*.js
+          test -f apps/dashboard/dist/assets/*.css
