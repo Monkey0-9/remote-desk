@@ -117,6 +117,10 @@ fn test_identity_rotation_and_backup() {
     assert_ne!(rotated.public_key_bytes(), initial.public_key_bytes());
     assert!(key_path.with_extension("key.bak").exists());
 
+    // Test recovery from backup
+    let recovered = DeviceIdentity::recover_from_backup(&key_path).expect("recover from backup");
+    assert_eq!(recovered.public_key_bytes(), initial.public_key_bytes());
+
     let _ = fs::remove_dir_all(tmp_dir);
 }
 

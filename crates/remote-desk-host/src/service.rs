@@ -44,6 +44,8 @@ pub enum HostError {
 pub struct HandshakeResponse {
     pub sas_code: String,
     pub host_ephemeral_pubkey: [u8; 32],
+    pub host_signature: Vec<u8>,
+    pub transcript_hash: [u8; 32],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,6 +283,19 @@ impl HostService {
         let host_pubkey = self.identity.public_key_bytes();
         let sas_code = compute_sas_code(&shared_secret, peer_pubkey, &host_pubkey);
 
+        // Bind handshake transcript with cryptographic signature
+        let transcript = remote_desk_core::HandshakeTranscript::new(
+            1,
+            host_pubkey,
+            *peer_pubkey,
+            host_ephemeral_pubkey,
+            *peer_ephemeral_pubkey,
+            format!("session_{}", peer_id),
+            vec!["screen".to_string(), "input".to_string()],
+        );
+        let host_signature = transcript.sign(&self.identity);
+        let transcript_hash = transcript.compute_transcript_hash();
+
         sm.transition(SessionEvent::SasGenerated {
             sas_code: sas_code.clone(),
         })
@@ -299,6 +314,8 @@ impl HostService {
         Ok(HandshakeResponse {
             sas_code,
             host_ephemeral_pubkey,
+            host_signature: host_signature.to_vec(),
+            transcript_hash,
         })
     }
 
@@ -480,6 +497,8 @@ impl HostService {
             host_device_id: String,
             host_pubkey_hex: String,
             host_ephemeral_pubkey_hex: String,
+            host_signature_hex: String,
+            transcript_hash_hex: String,
         }
 
         let resp_obj = ServerHandshakeResp {
@@ -488,6 +507,8 @@ impl HostService {
             host_device_id: self.device_id(),
             host_pubkey_hex: self.identity.public_key_hex(),
             host_ephemeral_pubkey_hex: hex_encode(&handshake_resp.host_ephemeral_pubkey),
+            host_signature_hex: hex_encode(&handshake_resp.host_signature),
+            transcript_hash_hex: hex_encode(&handshake_resp.transcript_hash),
         };
 
         let mut resp_json =
@@ -507,7 +528,10 @@ impl HostService {
 
         // Start capture on primary monitor
         let mut capture = self.capture.lock().await;
-        let _ = capture.start_capture(0).await;
+        if let Err(e) = capture.start_capture(0).await {
+            warn!("Failed to start capture on monitor 0: {}", e);
+            return Err(HostError::Capture(e.to_string()));
+        }
         drop(capture);
 
         let (stop_tx, mut stop_rx) = tokio::sync::broadcast::channel::<()>(1);
@@ -587,6 +611,38 @@ impl HostService {
             self.config.bind_addr
         );
 
+        // Spawn background rendezvous signaling client if configured
+        let (signal_stop_tx, signal_stop_rx) = tokio::sync::broadcast::channel::<()>(1);
+        let signal_task = if let Some(ref signal_url) = self.config.signal_server_url {
+            let client = crate::SignalingClient::new(self.identity.clone(), signal_url.clone());
+            let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel::<
+                remote_desk_net::SignalingEnvelope<remote_desk_net::SignalingPayload>,
+            >(16);
+            let (_outgoing_tx, outgoing_rx) = tokio::sync::mpsc::channel(16);
+            info!(
+                "Host daemon spawning rendezvous signaling client to {}",
+                signal_url
+            );
+
+            // Drain task for incoming envelopes
+            tokio::spawn(async move {
+                while let Some(envelope) = incoming_rx.recv().await {
+                    debug!(
+                        "Host received rendezvous signaling envelope from {}",
+                        envelope.sender_device_id
+                    );
+                }
+            });
+
+            Some(tokio::spawn(async move {
+                let _ = client
+                    .run_loop(incoming_tx, outgoing_rx, signal_stop_rx)
+                    .await;
+            }))
+        } else {
+            None
+        };
+
         loop {
             tokio::select! {
                 accept_res = listener.accept() => {
@@ -618,6 +674,11 @@ impl HostService {
                     break;
                 }
             }
+        }
+
+        let _ = signal_stop_tx.send(());
+        if let Some(task) = signal_task {
+            let _ = task.await;
         }
 
         self.terminate_session("Daemon stopping").await?;

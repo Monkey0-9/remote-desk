@@ -39,7 +39,8 @@ class WebRtcClient(
     val targetHostId: String,
     val hostIp: String,
     val hostPort: Int = 4443,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+    var transportSender: ((ByteArray) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "RemoteDeskClient"
@@ -154,6 +155,7 @@ class WebRtcClient(
     fun sendPointerMove(normX: Float, normY: Float, monitorId: Int = 0) {
         val payload = buildMouseMoveAbsPayload(monitorId, normX, normY)
         val frame = packFrame(MSG_MOUSE_MOVE_ABS, payload)
+        transportSender?.invoke(frame)
         Log.v(TAG, "Sent MouseMove: ($normX, $normY), frame_len=${frame.size}")
     }
 
@@ -163,6 +165,7 @@ class WebRtcClient(
     fun sendMouseButton(buttonCode: Int, down: Boolean) {
         val payload = buildMouseButtonPayload(buttonCode, down)
         val frame = packFrame(MSG_MOUSE_BUTTON, payload)
+        transportSender?.invoke(frame)
         Log.d(TAG, "Sent MouseButton: btn=$buttonCode, down=$down, frame_len=${frame.size}")
     }
 
@@ -172,6 +175,7 @@ class WebRtcClient(
     fun sendMouseWheel(deltaX: Short, deltaY: Short) {
         val payload = buildMouseWheelPayload(deltaX, deltaY)
         val frame = packFrame(MSG_MOUSE_WHEEL, payload)
+        transportSender?.invoke(frame)
         Log.d(TAG, "Sent MouseWheel: dx=$deltaX, dy=$deltaY, frame_len=${frame.size}")
     }
 
@@ -181,6 +185,7 @@ class WebRtcClient(
     fun sendKeyboardKey(scancode: Int, down: Boolean, modifiers: Int = 0) {
         val payload = buildKeyboardKeyPayload(scancode, down, modifiers)
         val frame = packFrame(MSG_KEYBOARD_KEY, payload)
+        transportSender?.invoke(frame)
         Log.d(TAG, "Sent KeyboardKey: scancode=$scancode, down=$down, frame_len=${frame.size}")
     }
 
@@ -193,6 +198,7 @@ class WebRtcClient(
         buf.putInt(0)  // Reason code 0
         buf.putLong(0) // Reason string len 0
         val frame = packFrame(MSG_DISCONNECT, buf.array())
+        transportSender?.invoke(frame)
         Log.i(TAG, "Sent Disconnect frame (${frame.size} bytes). Closing connection.")
         _connectionState.value = ConnectionState.DISCONNECTED
     }

@@ -19,10 +19,15 @@ pub struct RemoteDesktopPortalInjector {
     held_keys: HashSet<u32>,
     held_buttons: HashSet<MouseButtonCode>,
     total_events_injected: usize,
+    allow_mock: bool,
 }
 
 impl RemoteDesktopPortalInjector {
     pub fn new(monitor_width: u32, monitor_height: u32) -> Self {
+        Self::with_mock_policy(monitor_width, monitor_height, true)
+    }
+
+    pub fn with_mock_policy(monitor_width: u32, monitor_height: u32, allow_mock: bool) -> Self {
         Self {
             conn: None,
             session_handle: None,
@@ -32,6 +37,7 @@ impl RemoteDesktopPortalInjector {
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
             total_events_injected: 0,
+            allow_mock,
         }
     }
 
@@ -138,6 +144,12 @@ impl RemoteDesktopPortalInjector {
 impl InputInjectorBackend for RemoteDesktopPortalInjector {
     async fn move_pointer(&mut self, x: f32, y: f32, relative: bool) -> Result<(), InputError> {
         self.ensure_session().await;
+
+        if (self.conn.is_none() || self.session_handle.is_none()) && !self.allow_mock {
+            return Err(InputError::InjectionFailed(
+                "RemoteDesktop portal input session unavailable on Wayland. User approval required.".to_string(),
+            ));
+        }
 
         if let (Some(conn), Some(session_handle)) = (&self.conn, &self.session_handle) {
             let options: HashMap<&str, Value> = HashMap::new();

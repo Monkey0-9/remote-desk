@@ -93,12 +93,24 @@ pub struct WebRtcPeerSession {
     input_channel: Option<Arc<UdpTransportChannel>>,
     state: PeerConnectionState,
     session_id: String,
+    ice_ufrag: String,
+    ice_pwd: String,
+    dtls_fingerprint: String,
 }
 
 impl WebRtcPeerSession {
     /// Construct WebRTC peer session with ICE/STUN/TURN configuration
     pub async fn new(ice_configs: &[IceServerConfig]) -> Result<Self, PeerError> {
         let session_id = format!("rd_rtc_{}", rand::random::<u64>());
+        let ice_ufrag = format!("ufr_{:08x}", rand::random::<u32>());
+        let ice_pwd = format!("pwd_{:016x}", rand::random::<u64>());
+        let dtls_fingerprint = format!(
+            "sha-256 {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(),
+            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(),
+            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(),
+            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>()
+        );
 
         Ok(Self {
             ice_servers: ice_configs.to_vec(),
@@ -108,6 +120,9 @@ impl WebRtcPeerSession {
             input_channel: None,
             state: PeerConnectionState::New,
             session_id,
+            ice_ufrag,
+            ice_pwd,
+            dtls_fingerprint,
         })
     }
 
@@ -178,23 +193,40 @@ impl WebRtcPeerSession {
             .unwrap_or_default()
             .as_secs();
 
-        let sdp = format!(
+        let mut sdp = format!(
             "v=0\r\n\
              o=- {} 2 IN IP4 127.0.0.1\r\n\
              s=RemoteDesk-WebRTC-Session\r\n\
              t=0 0\r\n\
+             a=ice-ufrag:{}\r\n\
+             a=ice-pwd:{}\r\n\
+             a=ice-options:trickle\r\n\
+             a=fingerprint:{}\r\n\
+             a=group:BUNDLE 0 1\r\n\
              m=application {} UDP/DTLS/SCTP webrtc-datachannel\r\n\
              c=IN IP4 127.0.0.1\r\n\
              a=mid:0\r\n\
              a=sctp-port:5000\r\n\
              a=setup:actpass\r\n\
-             m=application {} UDP/DTLS/SCTP webrtc-datachannel\r\n\
+             a=max-message-size:262144\r\n",
+            now, self.ice_ufrag, self.ice_pwd, self.dtls_fingerprint, control_port
+        );
+
+        // Append candidate lines
+        for (idx, cand) in self.local_candidates.iter().enumerate() {
+            sdp.push_str(&cand.to_sdp_attribute((idx + 1) as u32, 1));
+            sdp.push_str("\r\n");
+        }
+
+        sdp.push_str(&format!(
+            "m=application {} UDP/DTLS/SCTP webrtc-datachannel\r\n\
              c=IN IP4 127.0.0.1\r\n\
              a=mid:1\r\n\
              a=sctp-port:5001\r\n\
-             a=setup:actpass\r\n",
-            now, control_port, input_port
-        );
+             a=setup:actpass\r\n\
+             a=max-message-size:262144\r\n",
+            input_port
+        ));
 
         Ok(sdp)
     }
@@ -205,8 +237,21 @@ impl WebRtcPeerSession {
             return Err(PeerError::Internal("Invalid SDP answer format".to_string()));
         }
 
+        // Parse any candidate lines contained in remote answer
+        for line in sdp_answer.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("a=candidate:") || trimmed.starts_with("candidate:") {
+                if let Ok(cand) = DiscoveredCandidate::from_sdp_attribute(trimmed) {
+                    self.remote_candidates.push(cand);
+                }
+            }
+        }
+
         self.state = PeerConnectionState::Connected;
-        info!("Applied remote WebRTC SDP answer. State is now Connected.");
+        info!(
+            "Applied remote WebRTC SDP answer. State is now Connected (parsed {} remote candidates).",
+            self.remote_candidates.len()
+        );
         Ok(())
     }
 

@@ -39,4 +39,32 @@ class SecureKeyStoreTest {
         val wipedSeed = keyStore.getLocalDeviceSeed()
         assertTrue(wipedSeed.all { it == 0.toByte() })
     }
+
+    @Test
+    fun testEncryptedPersistenceAndReload() {
+        val tempFile = java.io.File.createTempFile("rd_keystore_test", ".dat")
+        try {
+            val keyStore1 = SecureKeyStore(tempFile)
+            val seed1 = keyStore1.getLocalDeviceSeed()
+            keyStore1.trustDevice("rd-host-alpha", "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff")
+
+            val fileBytes = tempFile.readBytes()
+            // Verify file starts with SKS\1 magic
+            assertEquals(0x53.toByte(), fileBytes[0]) // 'S'
+            assertEquals(0x4B.toByte(), fileBytes[1]) // 'K'
+            assertEquals(0x53.toByte(), fileBytes[2]) // 'S'
+            assertEquals(0x01.toByte(), fileBytes[3]) // 1
+
+            // Verify plaintext seed and device ID are NOT directly visible in raw file bytes
+            val fileContentString = String(fileBytes, Charsets.ISO_8859_1)
+            assertFalse(fileContentString.contains("rd-host-alpha"))
+
+            // Reload into fresh instance
+            val keyStore2 = SecureKeyStore(tempFile)
+            assertArrayEquals(seed1, keyStore2.getLocalDeviceSeed())
+            assertTrue(keyStore2.isDeviceTrusted("rd-host-alpha"))
+        } finally {
+            tempFile.delete()
+        }
+    }
 }

@@ -65,3 +65,16 @@ async fn test_windows_send_input_and_fail_safe_release() {
     assert_eq!(injector.held_buttons.len(), 0);
     assert_eq!(injector.held_keys.len(), 0);
 }
+
+#[tokio::test]
+async fn test_dxgi_fail_closed_without_mock() {
+    let mut backend = DxgiCaptureBackend::new().with_allow_mock(false);
+    backend.start_capture(0).await.unwrap();
+
+    // When mock is disallowed and native display capture is unavailable, next_frame must return error
+    #[cfg(not(target_os = "windows"))]
+    {
+        let res = backend.next_frame().await;
+        assert!(matches!(res, Err(WindowsCaptureError::ApiError(_))));
+    }
+}

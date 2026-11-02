@@ -22,6 +22,8 @@ pub enum ClientSignalRequest {
         device_id: String,
         timestamp_ms: u64,
         public_key_hex: String,
+        #[serde(default)]
+        signature_hex: Option<String>,
     },
     #[serde(rename = "route")]
     Route {
@@ -193,9 +195,61 @@ impl SignalingServer {
                     match serde_json::from_str::<ClientSignalRequest>(&text) {
                         Ok(ClientSignalRequest::Register {
                             device_id,
-                            timestamp_ms: _,
-                            public_key_hex: _,
+                            timestamp_ms,
+                            public_key_hex,
+                            signature_hex,
                         }) => {
+                            // 1. Clock skew check: max 5 minutes (300,000 ms) drift
+                            let now_ms = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            if timestamp_ms > 0 && now_ms.abs_diff(timestamp_ms) > 300_000 {
+                                let err_resp = ServerSignalResponse::Error {
+                                    message: format!(
+                                        "Registration rejected: timestamp drift too large ({}ms vs server {}ms)",
+                                        timestamp_ms, now_ms
+                                    ),
+                                };
+                                let _ = outbound_tx
+                                    .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                continue;
+                            }
+
+                            // 2. Cryptographic Proof-of-Possession check
+                            if let Some(ref sig_str) = signature_hex {
+                                let challenge = format!(
+                                    "RemoteDesk-Signaling-Register:{}:{}",
+                                    timestamp_ms, device_id
+                                );
+                                let pubkey_bytes = decode_hex_exact::<32>(&public_key_hex);
+                                let sig_bytes = decode_hex_exact::<64>(sig_str);
+
+                                let verified = match (pubkey_bytes, sig_bytes) {
+                                    (Some(pk), Some(sig)) => {
+                                        if let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&pk)
+                                        {
+                                            let dalek_sig =
+                                                ed25519_dalek::Signature::from_bytes(&sig);
+                                            use ed25519_dalek::Verifier;
+                                            vk.verify(challenge.as_bytes(), &dalek_sig).is_ok()
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    _ => false,
+                                };
+
+                                if !verified {
+                                    let err_resp = ServerSignalResponse::Error {
+                                        message: "Registration rejected: invalid cryptographic signature proof-of-possession".to_string(),
+                                    };
+                                    let _ = outbound_tx
+                                        .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                    continue;
+                                }
+                            }
+
                             if let Err(e) = broker.register_peer(&device_id) {
                                 let err_resp = ServerSignalResponse::Error {
                                     message: format!("Registration failed: {:?}", e),
@@ -219,8 +273,17 @@ impl SignalingServer {
                             target_id,
                             envelope_json,
                         }) => {
-                            let sender_id =
-                                registered_device_id.as_deref().unwrap_or("unauthenticated");
+                            let sender_id = match registered_device_id.as_deref() {
+                                Some(id) => id,
+                                None => {
+                                    let err_resp = ServerSignalResponse::Error {
+                                        message: "Unauthenticated: Must register device before routing messages".to_string(),
+                                    };
+                                    let _ = outbound_tx
+                                        .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                    continue;
+                                }
+                            };
 
                             // If target peer is currently connected live, forward immediately
                             let forwarded = {
@@ -308,5 +371,27 @@ impl SignalingServer {
 
         let _ = write_task.await;
         Ok(())
+    }
+}
+
+fn decode_hex_exact<const N: usize>(s: &str) -> Option<[u8; N]> {
+    if s.len() != N * 2 {
+        return None;
+    }
+    let mut out = [0u8; N];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }

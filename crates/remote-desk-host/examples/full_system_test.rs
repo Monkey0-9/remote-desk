@@ -100,8 +100,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let host_service = match HostService::new_auto(host_identity.clone(), host_config.clone()) {
         Ok(h) => {
-            println!("  -> Host Backend: Native Production Driver (Linux/Wayland/X11)");
-            h
+            let mut cap = h.capture.lock().await;
+            if cap.start_capture(0).await.is_ok() {
+                let _ = cap.stop_capture().await;
+                drop(cap);
+                println!("  -> Host Backend: Native Production Driver (Linux/Wayland/X11)");
+                h
+            } else {
+                drop(cap);
+                println!("  -> Host Backend: Mock Screen & Input Driver (Automated CI test mode without interactive GUI portal approval)");
+                HostService::new_mock(host_identity.clone(), host_config.clone())
+            }
         }
         Err(_) => {
             println!("  -> Host Backend: Mock Screen & Input Driver (Headless Sandbox)");

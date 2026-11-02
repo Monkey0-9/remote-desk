@@ -178,7 +178,9 @@ pub fn create_linux_capture_backend(
     allow_mock: bool,
 ) -> Result<Box<dyn ScreenCaptureBackend>, CaptureError> {
     match detect_display_server() {
-        LinuxDisplayServer::Wayland => Ok(Box::new(WaylandPortalCaptureBackend::new())),
+        LinuxDisplayServer::Wayland => Ok(Box::new(
+            WaylandPortalCaptureBackend::new().with_allow_mock(allow_mock),
+        )),
         LinuxDisplayServer::X11 => {
             if let Ok(x11) = X11ShmCaptureBackend::new() {
                 Ok(Box::new(x11))

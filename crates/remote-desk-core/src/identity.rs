@@ -37,6 +37,37 @@ impl DeviceIdentity {
         Self { signing_key }
     }
 
+    /// Atomically writes data to path using a tempfile and rename, setting 0600 permissions on Unix.
+    pub fn save_atomic(path: &Path, data: &[u8]) -> Result<(), IdentityError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file_stem = path.file_name().and_then(|s| s.to_str()).unwrap_or("key");
+        let tmp_path = path.with_file_name(format!(".{}.tmp.{}", file_stem, rand::random::<u32>()));
+
+        #[cfg(unix)]
+        {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp_path)?;
+            file.write_all(data)?;
+            file.sync_all()?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&tmp_path, data)?;
+        }
+
+        fs::rename(&tmp_path, path)?;
+        Ok(())
+    }
+
     /// Load identity from file or generate and persist securely (0600 on Unix)
     pub fn load_or_generate(path: &Path) -> Result<Self, IdentityError> {
         if path.exists() {
@@ -64,87 +95,42 @@ impl DeviceIdentity {
             seed.copy_from_slice(&data);
             Ok(Self::from_bytes(&seed))
         } else {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
             let identity = Self::generate();
             let seed = identity.to_bytes();
-
-            #[cfg(unix)]
-            {
-                use std::fs::OpenOptions;
-                use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(path)?;
-                file.write_all(&seed)?;
-            }
-
-            #[cfg(not(unix))]
-            {
-                fs::write(path, &seed)?;
-            }
-
+            Self::save_atomic(path, &seed)?;
             Ok(identity)
         }
     }
 
-    /// Rotates identity: generates a fresh key, saves previous key as `.bak`, and writes new key securely
+    /// Rotates identity: generates a fresh key, atomically saves previous key as `.bak`, and writes new key securely
     pub fn rotate_identity(path: &Path) -> Result<(Self, Self), IdentityError> {
         let old_identity = Self::load_or_generate(path)?;
 
-        // Backup old key
+        // Atomically backup old key
         let backup_path = path.with_extension("key.bak");
         let old_seed = old_identity.to_bytes();
+        Self::save_atomic(&backup_path, &old_seed)?;
 
-        #[cfg(unix)]
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-
-            let _ = fs::remove_file(&backup_path);
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&backup_path)?;
-            file.write_all(&old_seed)?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(&backup_path, &old_seed)?;
-        }
-
-        // Generate fresh identity and overwrite main key path
+        // Generate fresh identity and atomically overwrite main key path
         let new_identity = Self::generate();
         let new_seed = new_identity.to_bytes();
-
-        #[cfg(unix)]
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(path)?;
-            file.write_all(&new_seed)?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(path, &new_seed)?;
-        }
+        Self::save_atomic(path, &new_seed)?;
 
         Ok((new_identity, old_identity))
+    }
+
+    /// Recovers identity from backup `.bak` file if main key is lost or corrupted
+    pub fn recover_from_backup(path: &Path) -> Result<Self, IdentityError> {
+        let backup_path = path.with_extension("key.bak");
+        if !backup_path.exists() {
+            return Err(IdentityError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Backup file not found at {:?}", backup_path),
+            )));
+        }
+        let identity = Self::load_or_generate(&backup_path)?;
+        Self::save_atomic(path, &identity.to_bytes())?;
+        Ok(identity)
     }
 
     /// Export raw 32-byte secret seed for OS-protected keystore persistence
@@ -293,12 +279,8 @@ impl TrustedDeviceStore {
         Ok(store)
     }
 
-    /// Persist trusted device store to disk with 0600 permissions
+    /// Persist trusted device store to disk with 0600 permissions atomically
     pub fn save_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
         let json = serde_json::to_string_pretty(self).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -306,26 +288,10 @@ impl TrustedDeviceStore {
             )
         })?;
 
-        #[cfg(unix)]
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(path)?;
-            file.write_all(json.as_bytes())?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(path, json.as_bytes())?;
-        }
-
-        Ok(())
+        DeviceIdentity::save_atomic(path, json.as_bytes()).map_err(|e| match e {
+            IdentityError::Io(io_err) => io_err,
+            other => std::io::Error::other(other.to_string()),
+        })
     }
 
     /// Add or update a trusted device

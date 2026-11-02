@@ -11,3 +11,4 @@ override_dh_auto_install:
 	install -Dm755 target/release/remote-desk-signal debian/remote-desk/usr/bin/remote-desk-signal
 	install -Dm644 packaging/systemd/remote-desk.service debian/remote-desk/lib/systemd/system/remote-desk.service
 	install -Dm644 packaging/desktop/org.remotedesk.RemoteDesk.desktop debian/remote-desk/usr/share/applications/org.remotedesk.RemoteDesk.desktop
+	install -Dm644 packaging/udev/60-remote-desk-uinput.rules debian/remote-desk/lib/udev/rules.d/60-remote-desk-uinput.rules

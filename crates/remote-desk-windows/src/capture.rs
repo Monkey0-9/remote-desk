@@ -42,6 +42,7 @@ pub struct DxgiCaptureBackend {
     frame_count: u64,
     access_denied: bool,
     device_lost: bool,
+    allow_mock: bool,
 }
 
 impl DxgiCaptureBackend {
@@ -85,6 +86,7 @@ impl DxgiCaptureBackend {
             frame_count: 0,
             access_denied: false,
             device_lost: false,
+            allow_mock: true,
         }
     }
 
@@ -130,7 +132,17 @@ impl DxgiCaptureBackend {
             frame_count: 0,
             access_denied: false,
             device_lost: false,
+            allow_mock: false,
         }
+    }
+
+    pub fn with_allow_mock(mut self, allow: bool) -> Self {
+        self.allow_mock = allow;
+        self
+    }
+
+    pub fn is_mock_allowed(&self) -> bool {
+        self.allow_mock
     }
 
     pub fn with_access_denied(mut self) -> Self {
@@ -265,6 +277,13 @@ impl WindowsScreenCaptureBackend for DxgiCaptureBackend {
                     ReleaseDC(h_wnd, h_dc);
                 }
             }
+        }
+
+        if !self.allow_mock {
+            return Err(WindowsCaptureError::ApiError(
+                "Windows native display capture failed or is unavailable, and mock fallback is disabled"
+                    .to_string(),
+            ));
         }
 
         let size = (stride * height) as usize;

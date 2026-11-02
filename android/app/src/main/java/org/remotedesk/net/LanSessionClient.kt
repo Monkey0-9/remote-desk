@@ -30,7 +30,8 @@ class LanSessionClient(
     val deviceId: String,
     val hostIp: String,
     val hostPort: Int = 4443,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+    private val keyStore: org.remotedesk.security.SecureKeyStore? = null
 ) {
     companion object {
         private const val TAG = "LanSessionClient"
@@ -77,13 +78,18 @@ class LanSessionClient(
 
                 // 1. Send Handshake JSON
                 _connectionState.value = ConnectionState.HANDSHAKING
-                val dummyPubKey = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
-                val dummyEphKey = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+                val csprng = java.security.SecureRandom()
+                val ephKeyBytes = ByteArray(32)
+                csprng.nextBytes(ephKeyBytes)
+                val ephKeyHex = ephKeyBytes.joinToString("") { "%02x".format(it) }
+
+                val pubKeyBytes = keyStore?.getLocalDeviceSeed() ?: ByteArray(32).apply { csprng.nextBytes(this) }
+                val pubKeyHex = pubKeyBytes.joinToString("") { "%02x".format(it) }
 
                 val handshakeObj = JSONObject().apply {
                     put("peer_id", deviceId)
-                    put("peer_pubkey_hex", dummyPubKey)
-                    put("peer_ephemeral_pubkey_hex", dummyEphKey)
+                    put("peer_pubkey_hex", pubKeyHex)
+                    put("peer_ephemeral_pubkey_hex", ephKeyHex)
                 }
 
                 val handshakeBytes = handshakeObj.toString().toByteArray(Charsets.UTF_8)

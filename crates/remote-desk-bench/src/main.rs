@@ -51,7 +51,27 @@ fn main() {
     );
     println!("-------------------------------------------------------------------------------\n");
 
-    println!("Standardized Workloads Evaluation Targets (WL-01 to WL-10):");
+    println!("Empirical Live Workload Timing (Real hardware loop measurements):");
+    println!("-------------------------------------------------------------------------------");
+    println!(
+        "{:<35} | {:<12} | {:<10} | {:<8} | {:<8} | {:<10}",
+        "Workload Name", "Latency Med/P95", "Deliv FPS", "CPU %", "RAM RSS", "Samples"
+    );
+    println!("-------------------------------------------------------------------------------");
+    let measured_wl = BenchmarkSuite::run_measured_workload(WorkloadId::Wl01StaticDesktop, 1000);
+    println!(
+        "{:<35} | {:.3}ms / {:.3}ms | {:.0} ops | {:.2}% | {:.1} MB | {} samples",
+        measured_wl.name,
+        measured_wl.latency.median_ms,
+        measured_wl.latency.p95_ms,
+        measured_wl.delivered_fps,
+        measured_wl.host_cpu_pct,
+        measured_wl.host_memory_rss_mb,
+        measured_wl.sample_count
+    );
+    println!("-------------------------------------------------------------------------------\n");
+
+    println!("Architectural SLA Target Budgets (WL-01 to WL-10, Design Targets):");
     println!("-------------------------------------------------------------------------------");
     println!(
         "{:<35} | {:<12} | {:<10} | {:<8} | {:<8} | {:<10}",

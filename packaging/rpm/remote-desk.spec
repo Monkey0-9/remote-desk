@@ -28,6 +28,7 @@ install -Dm755 target/release/remote-desk-host %{buildroot}%{_bindir}/remote-des
 install -Dm755 target/release/remote-desk-signal %{buildroot}%{_bindir}/remote-desk-signal
 install -Dm644 packaging/systemd/remote-desk.service %{buildroot}%{_unitdir}/remote-desk.service
 install -Dm644 packaging/desktop/org.remotedesk.RemoteDesk.desktop %{buildroot}%{_datadir}/applications/org.remotedesk.RemoteDesk.desktop
+install -Dm644 packaging/udev/60-remote-desk-uinput.rules %{buildroot}%{_udevrulesdir}/60-remote-desk-uinput.rules
 
 %files
 %license LICENSE-MIT LICENSE-APACHE
@@ -35,6 +36,7 @@ install -Dm644 packaging/desktop/org.remotedesk.RemoteDesk.desktop %{buildroot}%
 %{_bindir}/remote-desk-signal
 %{_unitdir}/remote-desk.service
 %{_datadir}/applications/org.remotedesk.RemoteDesk.desktop
+%{_udevrulesdir}/60-remote-desk-uinput.rules
 
 %changelog
 * Wed Oct 28 2026 Remote-Desk Team <maintainers@remotedesk.org> - 0.1.0-1

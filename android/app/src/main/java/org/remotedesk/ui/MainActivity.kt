@@ -29,7 +29,7 @@ import org.remotedesk.data.SavedDevice
 import org.remotedesk.input.GestureRecognizer
 import org.remotedesk.input.InputMode
 import org.remotedesk.net.ConnectionState
-import org.remotedesk.net.LanSessionClient
+import org.remotedesk.net.WebRtcSessionManager
 import org.remotedesk.security.SecureKeyStore
 import java.io.File
 import kotlin.math.roundToInt
@@ -75,15 +75,34 @@ class MainActivity : ComponentActivity() {
 fun RemoteDeskApp(keyStore: SecureKeyStore, deviceRepository: DeviceRepository) {
     val navController = rememberNavController()
     var selectedDeviceId by remember { mutableStateOf("") }
-    var activeClient by remember { mutableStateOf<LanSessionClient?>(null) }
+    var activeClient by remember { mutableStateOf<WebRtcSessionManager?>(null) }
 
     fun connectToDevice(id: String) {
         selectedDeviceId = id
         val dev = deviceRepository.getDevice(id)
         val rawAddress = dev?.address ?: "127.0.0.1"
-        val host = if (rawAddress.contains(":")) rawAddress.substringBefore(":") else rawAddress
-        val port = if (rawAddress.contains(":")) rawAddress.substringAfter(":").toIntOrNull() ?: 4443 else 4443
-        val client = LanSessionClient(deviceId = id, hostIp = host, hostPort = port)
+        val isSignaling = rawAddress.startsWith("ws://") || rawAddress.startsWith("wss://") || rawAddress == "signaling:rendezvous"
+
+        val client = if (isSignaling) {
+            val sigUrl = if (rawAddress == "signaling:rendezvous") "ws://127.0.0.1:4443" else rawAddress
+            WebRtcSessionManager(
+                deviceId = "rd-controller",
+                targetHostId = id,
+                signalingUrl = sigUrl,
+                keyStore = keyStore
+            )
+        } else {
+            val host = if (rawAddress.contains(":")) rawAddress.substringBefore(":") else rawAddress
+            val port = if (rawAddress.contains(":")) rawAddress.substringAfter(":").toIntOrNull() ?: 4443 else 4443
+            WebRtcSessionManager(
+                deviceId = id,
+                targetHostId = id,
+                hostAddress = host,
+                hostPort = port,
+                keyStore = keyStore
+            )
+        }
+
         activeClient = client
         client.connect()
         navController.navigate("connecting")
@@ -351,7 +370,7 @@ fun AddComputerScreen(
 @Composable
 fun ConnectionProgressScreen(
     deviceId: String,
-    client: LanSessionClient?,
+    client: WebRtcSessionManager?,
     onConnected: () -> Unit,
     onCancel: () -> Unit
 ) {
@@ -431,7 +450,7 @@ fun ConnectionProgressScreen(
 
 @Composable
 fun SessionCanvasScreen(
-    client: LanSessionClient?,
+    client: WebRtcSessionManager?,
     onDisconnect: () -> Unit
 ) {
     val gestureRecognizer = remember { GestureRecognizer() }

@@ -20,6 +20,7 @@ pub struct WaylandPortalCaptureBackend {
     frame_count: Arc<AtomicU64>,
     is_running: Arc<AtomicBool>,
     monitors: Vec<MonitorDescriptor>,
+    allow_mock: bool,
 }
 
 impl WaylandPortalCaptureBackend {
@@ -40,7 +41,13 @@ impl WaylandPortalCaptureBackend {
                 refresh_rate: 60,
                 is_primary: true,
             }],
+            allow_mock: true,
         }
+    }
+
+    pub fn with_allow_mock(mut self, allow_mock: bool) -> Self {
+        self.allow_mock = allow_mock;
+        self
     }
 
     /// Establish real DBus session with org.freedesktop.portal.ScreenCast
@@ -180,8 +187,11 @@ impl ScreenCaptureBackend for WaylandPortalCaptureBackend {
             return Err(CaptureError::MonitorNotFound(monitor_id));
         }
 
-        // Attempt genuine portal negotiation; if portal is unavailable (e.g. headless), fallback cleanly
+        // Attempt genuine portal negotiation; in production (!allow_mock), do not silently fall back
         if let Err(e) = self.establish_portal_session().await {
+            if !self.allow_mock {
+                return Err(e);
+            }
             debug!(
                 "DBus portal initiation returned {:?}; activating fallback stream",
                 e

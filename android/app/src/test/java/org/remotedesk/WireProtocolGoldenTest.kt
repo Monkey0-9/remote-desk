@@ -54,5 +54,38 @@ class WireProtocolGoldenTest {
         assertEquals(30, buf.getInt()) // Scancode 30
         assertEquals(1, buf.getInt()) // Pressed = 1
         assertEquals(1, buf.getInt()) // Modifiers = 1
+
+        val frame = client.packFrame(WebRtcClient.MSG_KEYBOARD_KEY, payload)
+        assertEquals(32, frame.size) // 16 header + 16 payload
+    }
+
+    @Test
+    fun testMouseWheelPayloadMatchesRustWireLayout() {
+        val client = WebRtcClient("test-device", "target-host", "127.0.0.1", 4443)
+        val payload = client.buildMouseWheelPayload(10.toShort(), (-120).toShort())
+
+        assertEquals(8, payload.size)
+        val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        assertEquals(3, buf.getInt()) // Variant tag 3
+        assertEquals(10.toShort(), buf.getShort())
+        assertEquals((-120).toShort(), buf.getShort())
+
+        val frame = client.packFrame(WebRtcClient.MSG_MOUSE_WHEEL, payload)
+        assertEquals(24, frame.size) // 16 header + 8 payload
+        assertEquals(WebRtcClient.MSG_MOUSE_WHEEL, frame[3])
+    }
+
+    @Test
+    fun testDisconnectPayloadMatchesRustWireLayout() {
+        val client = WebRtcClient("test-device", "target-host", "127.0.0.1", 4443)
+        val buf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(12) // Variant tag 12 (Disconnect)
+        buf.putInt(0)  // Reason code 0
+        buf.putLong(0) // Reason string len 0
+        val payload = buf.array()
+
+        val frame = client.packFrame(WebRtcClient.MSG_DISCONNECT, payload)
+        assertEquals(32, frame.size)
+        assertEquals(WebRtcClient.MSG_DISCONNECT, frame[3])
     }
 }

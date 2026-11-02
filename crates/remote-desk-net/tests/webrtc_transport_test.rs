@@ -8,6 +8,8 @@ use remote_desk_proto::messages::{
 
 #[tokio::test]
 async fn test_webrtc_session_creation_and_sdp_offer() {
+    use remote_desk_net::ice::{compute_ice_priority, IceCandidateType};
+
     let ice_configs = IceServerConfig::default_stun_servers();
     let mut session = WebRtcPeerSession::new(&ice_configs).await.unwrap();
 
@@ -17,10 +19,45 @@ async fn test_webrtc_session_creation_and_sdp_offer() {
     assert!(session.control_channel().is_some());
     assert!(session.input_channel().is_some());
 
-    // Generate local SDP offer
+    // Generate local SDP offer with RFC 8866 attributes
     let sdp = session.create_offer().await.unwrap();
     assert!(sdp.contains("v=0"));
     assert!(sdp.contains("m=application"));
+    assert!(sdp.contains("a=ice-ufrag:"));
+    assert!(sdp.contains("a=ice-pwd:"));
+    assert!(sdp.contains("a=fingerprint:sha-256"));
+    assert!(sdp.contains("a=candidate:"));
+
+    // Verify candidate parsing from remote answer
+    let remote_sdp = "v=0\r\n\
+        o=- 12345 2 IN IP4 192.168.1.100\r\n\
+        s=RemoteDesk-Client\r\n\
+        t=0 0\r\n\
+        m=application 9000 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+        c=IN IP4 192.168.1.100\r\n\
+        a=candidate:1 1 UDP 2130706431 192.168.1.100 9000 typ host\r\n\
+        a=candidate:2 1 UDP 16777215 203.0.113.1 9000 typ srflx\r\n";
+
+    session.set_remote_answer(remote_sdp).await.unwrap();
+    assert_eq!(session.remote_candidates().len(), 2);
+    assert_eq!(
+        session.remote_candidates()[0].candidate_type,
+        IceCandidateType::Host
+    );
+    assert_eq!(
+        session.remote_candidates()[1].candidate_type,
+        IceCandidateType::ServerReflexive
+    );
+
+    // Verify priority computation
+    let host_prio = compute_ice_priority(IceCandidateType::Host, 65535, 1);
+    let srflx_prio = compute_ice_priority(IceCandidateType::ServerReflexive, 65535, 1);
+    assert!(
+        host_prio > srflx_prio,
+        "Host priority ({}) must exceed srflx priority ({})",
+        host_prio,
+        srflx_prio
+    );
 
     session.close().await.unwrap();
 }

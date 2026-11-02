@@ -70,7 +70,10 @@ impl UinputInjector {
                     .open("/dev/input/uinput")
             })
             .map_err(|e| {
-                InputError::InjectionFailed(format!("Failed to open /dev/uinput: {}", e))
+                InputError::InjectionFailed(format!(
+                    "Failed to open /dev/uinput: {}. To enable Linux native input injection without running as root, add the udev rule 'KERNEL==\"uinput\", SUBSYSTEM==\"misc\", MODE=\"0660\", GROUP=\"input\"' and ensure current user is added to group 'input'.",
+                    e
+                ))
             })?;
 
         let fd = file.as_raw_fd();

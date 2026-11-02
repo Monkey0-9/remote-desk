@@ -148,10 +148,13 @@ pub fn create_linux_input_injector(
         Ok(Box::new(uinput))
     } else {
         match detect_display_server() {
-            LinuxDisplayServer::Wayland => Ok(Box::new(RemoteDesktopPortalInjector::new(
-                monitor_width,
-                monitor_height,
-            ))),
+            LinuxDisplayServer::Wayland => {
+                Ok(Box::new(RemoteDesktopPortalInjector::with_mock_policy(
+                    monitor_width,
+                    monitor_height,
+                    allow_mock,
+                )))
+            }
             LinuxDisplayServer::X11 => {
                 if let Ok(xtest) = XTestInjector::new(monitor_width, monitor_height) {
                     Ok(Box::new(xtest))

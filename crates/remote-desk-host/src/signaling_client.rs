@@ -62,16 +62,25 @@ impl SignalingClient {
         let (mut write, mut read) = ws_stream.split();
         self.is_connected.store(true, Ordering::SeqCst);
 
-        // 1. Send Register Request
+        // 1. Send Register Request with Proof-of-Possession Ed25519 signature
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
 
+        let challenge = format!(
+            "RemoteDesk-Signaling-Register:{}:{}",
+            now_ms,
+            self.identity.device_id()
+        );
+        let sig_bytes = self.identity.sign(challenge.as_bytes());
+        let sig_hex = hex_encode(&sig_bytes);
+
         let reg_req = ClientSignalRequest::Register {
             device_id: self.identity.device_id(),
             timestamp_ms: now_ms,
             public_key_hex: self.identity.public_key_hex(),
+            signature_hex: Some(sig_hex),
         };
 
         let reg_json = serde_json::to_string(&reg_req)
@@ -149,4 +158,14 @@ impl SignalingClient {
         self.is_connected.store(false, Ordering::SeqCst);
         Ok(())
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX_CHARS[(b >> 4) as usize] as char);
+        s.push(HEX_CHARS[(b & 0x0F) as usize] as char);
+    }
+    s
 }
