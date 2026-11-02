@@ -97,6 +97,28 @@ impl SessionStateMachine {
         self.is_active()
     }
 
+    pub fn peer_id(&self) -> Option<&str> {
+        match &self.state {
+            SessionState::Connecting { peer_id }
+            | SessionState::Negotiating { peer_id }
+            | SessionState::Authenticating { peer_id }
+            | SessionState::WaitingApproval { peer_id, .. }
+            | SessionState::EstablishingTransport { peer_id }
+            | SessionState::Active { peer_id, .. }
+            | SessionState::Paused { peer_id, .. }
+            | SessionState::Reconnecting { peer_id, .. }
+            | SessionState::Disconnecting { peer_id, .. } => Some(peer_id.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn sas_code(&self) -> Option<&str> {
+        match &self.state {
+            SessionState::WaitingApproval { sas_code, .. } => Some(sas_code.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn transition(&mut self, event: SessionEvent) -> Result<SessionAction, SessionError> {
         let (next_state, action) = match (&self.state, event.clone()) {
             (SessionState::Disconnected, SessionEvent::StartDiscovery) => {

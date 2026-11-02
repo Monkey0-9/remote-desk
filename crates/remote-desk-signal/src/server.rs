@@ -136,27 +136,76 @@ impl SignalingServer {
         active_peers: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Message>>>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Peek initial bytes to distinguish HTTP health probe from WebSocket handshake
-        let mut peek_buf = [0u8; 256];
+        let mut peek_buf = [0u8; 1024];
         let bytes_peeked = stream.peek(&mut peek_buf).await?;
         let peek_str = String::from_utf8_lossy(&peek_buf[..bytes_peeked]);
 
-        if peek_str.starts_with("GET /health") || peek_str.starts_with("GET /ready") {
-            let mut discard = [0u8; 1024];
-            let _ = stream.read(&mut discard).await?;
+        let is_http = peek_str.starts_with("GET ")
+            || peek_str.starts_with("POST ")
+            || peek_str.starts_with("HEAD ")
+            || peek_str.starts_with("OPTIONS ");
 
-            let peer_count = broker.registered_peer_count();
-            let body = format!(
-                "{{\"status\":\"ok\",\"service\":\"remote-desk-signal\",\"registered_peers\":{}}}\n",
-                peer_count
-            );
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).await?;
-            stream.flush().await?;
-            return Ok(());
+        let is_websocket_upgrade = peek_str.to_lowercase().contains("upgrade: websocket");
+
+        if is_http && !is_websocket_upgrade {
+            let mut discard = vec![0u8; bytes_peeked.max(2048)];
+            let _ = stream.read(&mut discard[..bytes_peeked]).await?;
+
+            let first_line = peek_str.lines().next().unwrap_or("");
+            let parts: Vec<&str> = first_line.split_whitespace().collect();
+            let raw_path = parts.get(1).copied().unwrap_or("/");
+            let path = raw_path.split('?').next().unwrap_or("/");
+
+            match path {
+                "/health" | "/ready" => {
+                    let peer_count = broker.registered_peer_count();
+                    let body = format!(
+                        "{{\"status\":\"ok\",\"service\":\"remote-desk-signal\",\"registered_peers\":{}}}\n",
+                        peer_count
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).await?;
+                    stream.flush().await?;
+                    return Ok(());
+                }
+                "/api/info" | "/status" => {
+                    let peer_count = broker.registered_peer_count();
+                    let body = format!(
+                        "{{\"status\":\"online\",\"service\":\"remote-desk-signal\",\"registered_peers\":{},\"capacity\":{}}}\n",
+                        peer_count,
+                        broker.capacity()
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).await?;
+                    stream.flush().await?;
+                    return Ok(());
+                }
+                "/favicon.ico" => {
+                    let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+                    stream.write_all(response.as_bytes()).await?;
+                    stream.flush().await?;
+                    return Ok(());
+                }
+                _ => {
+                    let html = generate_signal_portal_html(&broker);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    );
+                    stream.write_all(response.as_bytes()).await?;
+                    stream.flush().await?;
+                    return Ok(());
+                }
+            }
         }
 
         // Upgrade TCP stream to WebSocket (stream has not been read, handshake is intact)
@@ -394,4 +443,231 @@ fn hex_nibble(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
+    let peer_count = broker.registered_peer_count();
+    let capacity = broker.capacity();
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote-Desk Rendezvous Broker</title>
+    <style>
+        :root {{
+            --bg: #090d16;
+            --surface: #111827;
+            --border: #1f2937;
+            --text: #f3f4f6;
+            --text-dim: #9ca3af;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.15);
+            --success: #10b981;
+            --mono-bg: #1e293b;
+        }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2.5rem 1rem;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }}
+        .container {{ width: 100%; max-width: 800px; }}
+        header {{ margin-bottom: 2rem; text-align: center; }}
+        .badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 9999px;
+            padding: 0.35rem 0.85rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }}
+        .pulse-dot {{
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--success);
+        }}
+        h1 {{ font-size: 2.25rem; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.025em; }}
+        .subtitle {{ color: var(--text-dim); font-size: 1rem; }}
+        .grid {{
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }}
+        @media (min-width: 640px) {{
+            .grid {{ grid-template-columns: 1fr 1fr; }}
+            .grid-full {{ grid-column: span 2; }}
+        }}
+        .card {{
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }}
+        .card h2 {{
+            font-size: 1.125rem;
+            color: #ffffff;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+        .field {{ margin-bottom: 1rem; }}
+        .field:last-child {{ margin-bottom: 0; }}
+        .label {{
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            margin-bottom: 0.25rem;
+        }}
+        .value {{ font-size: 0.95rem; font-weight: 500; }}
+        .mono {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            background: var(--mono-bg);
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: var(--accent);
+            display: inline-block;
+        }}
+        .guide-step {{
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            align-items: flex-start;
+        }}
+        .guide-step:last-child {{ margin-bottom: 0; }}
+        .step-num {{
+            background: var(--accent-glow);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }}
+        .step-text {{ color: var(--text-dim); font-size: 0.95rem; }}
+        .step-text strong {{ color: var(--text); }}
+        footer {{
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.875rem;
+            border-top: 1px solid var(--border);
+            padding-top: 1.5rem;
+            width: 100%;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="badge">
+                <span class="pulse-dot"></span>
+                RENDEZVOUS BROKER ONLINE
+            </div>
+            <h1>Remote-Desk Signaling Service</h1>
+            <p class="subtitle">Ephemeral In-Memory WebRTC Signaling Broker & Peer Discovery Node</p>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <h2>Broker Status</h2>
+                <div class="field">
+                    <div class="label">Registered Peers</div>
+                    <div class="mono" style="font-size: 1.25rem; font-weight: 700;">{peer_count} active</div>
+                </div>
+                <div class="field">
+                    <div class="label">Concurrent Capacity</div>
+                    <div class="value">{capacity} endpoints</div>
+                </div>
+                <div class="field">
+                    <div class="label">Storage Policy</div>
+                    <div class="value">Zero-Knowledge In-Memory (Zero Logs)</div>
+                </div>
+                <div class="field">
+                    <div class="label">Authentication Policy</div>
+                    <div class="value">Ed25519 Cryptographic Proof-of-Possession</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Protocols & Endpoints</h2>
+                <div class="field">
+                    <div class="label">WebSocket URL</div>
+                    <div class="mono">ws://HOST:PORT/</div>
+                </div>
+                <div class="field">
+                    <div class="label">Wire Framing</div>
+                    <div class="value">JSON Envelope (RFC 6455 Text Frames)</div>
+                </div>
+                <div class="field">
+                    <div class="label">Health Check API</div>
+                    <div class="value">
+                        <a href="/health" style="color: var(--accent); text-decoration: none;">/health</a> &bull; 
+                        <a href="/api/info" style="color: var(--accent); text-decoration: none;">/api/info</a>
+                    </div>
+                </div>
+                <div class="field">
+                    <div class="label">Rate Limiter</div>
+                    <div class="value">5 req/s token bucket per device ID</div>
+                </div>
+            </div>
+
+            <div class="card grid-full">
+                <h2>Host Configuration Guide</h2>
+                <div class="guide-step">
+                    <div class="step-num">1</div>
+                    <div class="step-text">
+                        Launch your host daemon pointing to this rendezvous broker:
+                        <br/>
+                        <code class="mono" style="margin-top: 0.5rem; display: block;">cargo run -p remote-desk-host -- --signal-server ws://THIS_IP:PORT/</code>
+                    </div>
+                </div>
+                <div class="guide-step">
+                    <div class="step-num">2</div>
+                    <div class="step-text">
+                        The host automatically registers its Ed25519 identity key and publishes its presence.
+                    </div>
+                </div>
+                <div class="guide-step">
+                    <div class="step-num">3</div>
+                    <div class="step-text">
+                        Remote controllers connect to the same broker and route encrypted SDP offers/answers directly.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            Remote-Desk Rendezvous Broker v0.1.0 &bull; Ephemeral Security &bull; Zero Central Database
+        </footer>
+    </div>
+</body>
+</html>"#,
+        peer_count = peer_count,
+        capacity = capacity
+    )
 }

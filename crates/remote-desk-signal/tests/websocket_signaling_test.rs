@@ -208,3 +208,76 @@ async fn test_websocket_registration_proof_of_possession_and_security() {
     let _ = shutdown_tx.send(());
     let _ = server_task.await;
 }
+
+#[tokio::test]
+async fn test_signaling_server_http_dashboard_and_browser_endpoints() {
+    let server = SignalingServer::bind("127.0.0.1:0", 100).await.unwrap();
+    let addr = server.local_addr().to_string();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let server_task = tokio::spawn(async move {
+        let _ = server.run(shutdown_rx).await;
+    });
+
+    // 1. GET / returns HTML dashboard
+    {
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: text/html"));
+        assert!(response.contains("Remote-Desk Rendezvous Broker"));
+    }
+
+    // 2. GET /signal returns HTML dashboard
+    {
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        stream
+            .write_all(b"GET /signal HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: text/html"));
+        assert!(response.contains("RENDEZVOUS BROKER ONLINE"));
+    }
+
+    // 3. GET /api/info returns JSON info
+    {
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        stream
+            .write_all(b"GET /api/info HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("application/json"));
+        assert!(response.contains(r#""status":"online""#));
+        assert!(response.contains(r#""capacity":100"#));
+    }
+
+    // 4. GET /favicon.ico returns 204 No Content
+    {
+        let mut stream = TcpStream::connect(&addr).await.unwrap();
+        stream
+            .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 204 No Content"));
+    }
+
+    let _ = shutdown_tx.send(());
+    let _ = server_task.await;
+}

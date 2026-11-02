@@ -83,10 +83,11 @@ fun RemoteDeskApp(keyStore: SecureKeyStore, deviceRepository: DeviceRepository) 
         val rawAddress = dev?.address ?: "127.0.0.1"
         val isSignaling = rawAddress.startsWith("ws://") || rawAddress.startsWith("wss://") || rawAddress == "signaling:rendezvous"
 
+        val controllerId = keyStore.getDeviceId()
         val client = if (isSignaling) {
             val sigUrl = if (rawAddress == "signaling:rendezvous") "ws://127.0.0.1:4443" else rawAddress
             WebRtcSessionManager(
-                deviceId = "rd-controller",
+                deviceId = controllerId,
                 targetHostId = id,
                 signalingUrl = sigUrl,
                 keyStore = keyStore
@@ -95,7 +96,7 @@ fun RemoteDeskApp(keyStore: SecureKeyStore, deviceRepository: DeviceRepository) 
             val host = if (rawAddress.contains(":")) rawAddress.substringBefore(":") else rawAddress
             val port = if (rawAddress.contains(":")) rawAddress.substringAfter(":").toIntOrNull() ?: 4443 else 4443
             WebRtcSessionManager(
-                deviceId = id,
+                deviceId = controllerId,
                 targetHostId = id,
                 hostAddress = host,
                 hostPort = port,

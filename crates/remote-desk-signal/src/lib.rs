@@ -158,4 +158,8 @@ impl RendezvousBroker {
     pub fn registered_peer_count(&self) -> usize {
         self.mailboxes.lock().unwrap().len()
     }
+
+    pub fn capacity(&self) -> usize {
+        self.max_devices
+    }
 }

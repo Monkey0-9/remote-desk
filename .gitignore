@@ -22,3 +22,5 @@ local.properties
 *.p12
 *.crt
 *.cert
+node_modules/
+

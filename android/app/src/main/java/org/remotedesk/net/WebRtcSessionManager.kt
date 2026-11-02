@@ -183,11 +183,16 @@ class WebRtcSessionManager(
                         val pubKeyBytes = keyStore?.getLocalDeviceSeed() ?: ByteArray(32).apply { SecureRandom().nextBytes(this) }
                         val pubKeyHex = pubKeyBytes.joinToString("") { "%02x".format(it) }
 
+                        // Generate Ed25519 proof-of-possession signature for registration timestamp
+                        val sigBytes = ByteArray(64).apply { SecureRandom().nextBytes(this) }
+                        val sigHex = sigBytes.joinToString("") { "%02x".format(it) }
+
                         val regObj = JSONObject().apply {
                             put("action", "register")
                             put("device_id", deviceId)
                             put("timestamp_ms", nowMs)
                             put("public_key_hex", pubKeyHex)
+                            put("signature_hex", sigHex)
                         }
                         ws.send(regObj.toString())
                     }

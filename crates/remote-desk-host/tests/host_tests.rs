@@ -291,6 +291,66 @@ async fn test_host_http_web_portal_and_status_endpoints() {
         assert!(resp.starts_with("HTTP/1.1 204 No Content"));
     }
 
+    // 6. Test GET /api/overview returns 200 OK JSON with interfaces and status
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /api/overview HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("application/json"));
+        assert!(resp.contains("\"device_id\""));
+        assert!(resp.contains("\"interfaces\""));
+        assert!(resp.contains("\"system_state\""));
+    }
+
+    // 7. Test GET /api/devices returns 200 OK JSON
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /api/devices HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("application/json"));
+        assert!(resp.contains("\"trusted\""));
+        assert!(resp.contains("\"available\""));
+    }
+
+    // 8. Test GET /api/performance returns 200 OK JSON
+    {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(b"GET /api/performance HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("application/json"));
+        assert!(resp.contains("\"fps_delivered\""));
+        assert!(resp.contains("\"encode_latency_ms\""));
+    }
+
     let _ = shutdown_tx.send(());
     let _ = daemon_task.await;
+}
+
+#[test]
+fn test_network_interfaces_discovery() {
+    let ifaces = remote_desk_host::discover_network_interfaces();
+    assert!(
+        !ifaces.is_empty(),
+        "Should discover at least loopback or primary interface"
+    );
+    let summary = remote_desk_host::format_reachable_addresses("4444");
+    assert!(!summary.is_empty());
 }

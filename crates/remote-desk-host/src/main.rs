@@ -158,19 +158,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Backend Driver:  '{}'", backend_choice);
     info!("Host Name:       '{}'", config.device_name);
     info!("Unattended Mode: {}", config.unattended);
-    info!("Bind Address:    '{}'", config.bind_addr);
+    info!("Bind Address:    '{}' (Listening Socket)", config.bind_addr);
+
+    let reachable_addrs = remote_desk_host::format_reachable_addresses(&config.bind_addr);
+    for addr in &reachable_addrs {
+        info!("Reachable IP:    '{}'", addr);
+    }
+
     if let Some(ref s_url) = config.signal_server_url {
         info!("Signaling Server:'{}'", s_url);
     } else {
         info!("Signaling Server:[Standalone LAN Mode - pass --signal-server <URL> for rendezvous broker]");
     }
-    let portal_display_addr = if config.bind_addr.starts_with("0.0.0.0:") {
-        let port = config.bind_addr.split(':').nth(1).unwrap_or("4443");
-        format!("http://127.0.0.1:{}/ (or your LAN IP)", port)
-    } else {
-        format!("http://{}/", config.bind_addr)
-    };
-    info!("Web Portal:      '{}'", portal_display_addr);
+    info!(
+        "Web Portal:      '{}'",
+        reachable_addrs
+            .first()
+            .unwrap_or(&format!("http://{}/", config.bind_addr))
+    );
 
     let monitors = host.enumerate_monitors().await?;
     info!("Detected {} display output(s):", monitors.len());

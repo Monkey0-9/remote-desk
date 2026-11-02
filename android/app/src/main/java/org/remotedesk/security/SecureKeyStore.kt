@@ -157,6 +157,13 @@ class SecureKeyStore(private val storageFile: File? = null) {
         return localDeviceSeed?.clone() ?: ByteArray(32)
     }
 
+    fun getDeviceId(): String {
+        val seed = getLocalDeviceSeed()
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(seed)
+        val shortHex = hash.take(4).joinToString("") { "%02x".format(it) }
+        return "rd-android-$shortHex"
+    }
+
     fun rotateLocalDeviceSeed(): ByteArray {
         val seed = ByteArray(32)
         SecureRandom().nextBytes(seed)
