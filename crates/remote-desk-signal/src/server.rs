@@ -456,13 +456,15 @@ fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Remote-Desk Rendezvous Broker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
     <style>
         :root {{
-            --bg: #090d16;
+            --bg: #0a0f1d;
             --surface: #111827;
-            --border: #1f2937;
-            --text: #f3f4f6;
-            --text-dim: #9ca3af;
+            --border: #1e293b;
+            --text: #f8fafc;
+            --text-dim: #94a3b8;
             --accent: #38bdf8;
             --accent-glow: rgba(56, 189, 248, 0.15);
             --success: #10b981;
@@ -470,7 +472,7 @@ fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
         }}
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: var(--bg);
             color: var(--text);
             line-height: 1.6;
@@ -540,7 +542,7 @@ fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
         }}
         .value {{ font-size: 0.95rem; font-weight: 500; }}
         .mono {{
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             background: var(--mono-bg);
             padding: 0.25rem 0.5rem;
             border-radius: 6px;
