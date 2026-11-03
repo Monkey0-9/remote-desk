@@ -113,7 +113,15 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew testDebugUnitTest --stacktrace
+          ./gradlew testDebugUnitTest --stacktrace 2>&1 | tee /tmp/gradle.log || {
+            status=$?
+            echo "::error title=Gradle Output::$(tail -n 25 /tmp/gradle.log | tr '\n' ' ' | sed 's/"/\"/g')"
+            for xml in $(find app/build/test-results -name "*.xml" 2>/dev/null); do
+              echo "=== $xml ==="
+              cat "$xml"
+            done
+            exit $status
+          }
 
   # 8. Rust/Kotlin Protocol Compatibility Tests
   protocol-golden-vectors:
