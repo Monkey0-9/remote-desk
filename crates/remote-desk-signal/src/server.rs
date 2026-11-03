@@ -450,105 +450,191 @@ fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
     let capacity = broker.capacity();
 
     format!(
-        r#"<!DOCTYPE html>
+        r###"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Remote-Desk Rendezvous Broker</title>
+    <title>Remote-Desk Rendezvous Broker &bull; Signaling Node</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
     <style>
         :root {{
-            --bg: #0a0f1d;
-            --surface: #111827;
-            --border: #1e293b;
-            --text: #f8fafc;
-            --text-dim: #94a3b8;
+            --bg-base: #08090c;
+            --bg-surface: #0e1118;
+            --bg-card: #131722;
+            --border: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(255, 255, 255, 0.16);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
             --accent: #38bdf8;
-            --accent-glow: rgba(56, 189, 248, 0.15);
-            --success: #10b981;
-            --mono-bg: #1e293b;
+            --emerald: #10b981;
+            --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         }}
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
-            font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: var(--bg);
-            color: var(--text);
+            font-family: var(--font-sans);
+            background: var(--bg-base);
+            color: var(--text-primary);
             line-height: 1.6;
-            padding: 2.5rem 1rem;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
+            padding: 2.5rem 1rem;
+            -webkit-font-smoothing: antialiased;
         }}
-        .container {{ width: 100%; max-width: 800px; }}
-        header {{ margin-bottom: 2rem; text-align: center; }}
-        .badge {{
+        .container {{ width: 100%; max-width: 880px; }}
+        header {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            margin-bottom: 2rem;
+            gap: 0.75rem;
+        }}
+        .header-top {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+        }}
+        .logo-mark {{
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        }}
+        .status-pill {{
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            background: rgba(16, 185, 129, 0.15);
-            color: var(--success);
-            border: 1px solid rgba(16, 185, 129, 0.3);
+            background: rgba(16, 185, 129, 0.12);
+            color: var(--emerald);
+            border: 1px solid rgba(16, 185, 129, 0.28);
             border-radius: 9999px;
             padding: 0.35rem 0.85rem;
-            font-size: 0.875rem;
+            font-size: 0.775rem;
             font-weight: 600;
-            margin-bottom: 1rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
         }}
-        .pulse-dot {{
-            width: 8px;
-            height: 8px;
-            background: var(--success);
+        .status-dot {{
+            width: 7px;
+            height: 7px;
+            background: var(--emerald);
             border-radius: 50%;
-            box-shadow: 0 0 8px var(--success);
+            box-shadow: 0 0 8px var(--emerald);
         }}
-        h1 {{ font-size: 2.25rem; font-weight: 700; color: #ffffff; margin-bottom: 0.5rem; letter-spacing: -0.025em; }}
-        .subtitle {{ color: var(--text-dim); font-size: 1rem; }}
+        h1 {{
+            font-size: 2rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            color: #ffffff;
+            margin-top: 0.25rem;
+        }}
+        .subtitle {{
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            max-width: 600px;
+        }}
         .grid {{
             display: grid;
             grid-template-columns: 1fr;
             gap: 1.5rem;
-            margin-bottom: 2rem;
+            margin-bottom: 1.75rem;
         }}
-        @media (min-width: 640px) {{
+        @media (min-width: 680px) {{
             .grid {{ grid-template-columns: 1fr 1fr; }}
             .grid-full {{ grid-column: span 2; }}
         }}
         .card {{
-            background: var(--surface);
+            background: var(--bg-card);
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 14px;
             padding: 1.5rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
+            display: flex;
+            flex-direction: column;
         }}
-        .card h2 {{
-            font-size: 1.125rem;
+        .card-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }}
+        .card-title {{
+            font-size: 1.05rem;
+            font-weight: 600;
             color: #ffffff;
-            margin-bottom: 1rem;
+            letter-spacing: -0.01em;
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }}
         .field {{ margin-bottom: 1rem; }}
         .field:last-child {{ margin-bottom: 0; }}
-        .label {{
-            font-size: 0.75rem;
+        .field-label {{
+            font-size: 0.725rem;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-dim);
-            margin-bottom: 0.25rem;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 0.35rem;
+            font-weight: 600;
         }}
-        .value {{ font-size: 0.95rem; font-weight: 500; }}
+        .field-value {{
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: var(--text-primary);
+        }}
         .mono {{
-            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            background: var(--mono-bg);
-            padding: 0.25rem 0.5rem;
+            font-family: var(--font-mono);
+            background: #080a0f;
+            border: 1px solid var(--border);
+            padding: 0.3rem 0.6rem;
             border-radius: 6px;
             font-size: 0.85rem;
             color: var(--accent);
             display: inline-block;
+        }}
+        .hud-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+        }}
+        @media (min-width: 640px) {{
+            .hud-grid {{ grid-template-columns: repeat(4, 1fr); }}
+        }}
+        .hud-metric {{
+            background: #080a0f;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.85rem 1rem;
+        }}
+        .hud-label {{
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+            font-weight: 600;
+        }}
+        .hud-value {{
+            font-family: var(--font-mono);
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: #ffffff;
+            font-variant-numeric: tabular-nums;
         }}
         .guide-step {{
             display: flex;
@@ -558,88 +644,110 @@ fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
         }}
         .guide-step:last-child {{ margin-bottom: 0; }}
         .step-num {{
-            background: var(--accent-glow);
+            background: rgba(56, 189, 248, 0.15);
             color: var(--accent);
             border: 1px solid var(--accent);
-            width: 28px;
-            height: 28px;
+            width: 26px;
+            height: 26px;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 700;
-            font-size: 0.875rem;
+            font-size: 0.8rem;
             flex-shrink: 0;
+            margin-top: 2px;
         }}
-        .step-text {{ color: var(--text-dim); font-size: 0.95rem; }}
-        .step-text strong {{ color: var(--text); }}
+        .step-text {{ color: var(--text-secondary); font-size: 0.925rem; }}
+        .step-text strong {{ color: var(--text-primary); }}
+        .link {{ color: var(--accent); text-decoration: none; font-weight: 500; }}
+        .link:hover {{ text-decoration: underline; }}
         footer {{
             text-align: center;
-            color: var(--text-dim);
-            font-size: 0.875rem;
+            color: var(--text-muted);
+            font-size: 0.825rem;
             border-top: 1px solid var(--border);
             padding-top: 1.5rem;
             width: 100%;
+            margin-top: 1rem;
         }}
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <div class="badge">
-                <span class="pulse-dot"></span>
-                RENDEZVOUS BROKER ONLINE
+            <div class="header-top">
+                <div class="logo-mark">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path>
+                        <path d="M2 12h20"></path>
+                    </svg>
+                </div>
+                <div class="status-pill">
+                    <span class="status-dot"></span>
+                    RENDEZVOUS BROKER ONLINE
+                </div>
             </div>
-            <h1>Remote-Desk Signaling Service</h1>
-            <p class="subtitle">Ephemeral In-Memory WebRTC Signaling Broker & Peer Discovery Node</p>
+            <h1>Remote-Desk Rendezvous Broker</h1>
+            <p class="subtitle">Ephemeral In-Memory WebRTC Signaling Broker & Zero-Knowledge Peer Discovery Node</p>
         </header>
 
         <div class="grid">
             <div class="card">
-                <h2>Broker Status</h2>
-                <div class="field">
-                    <div class="label">Registered Peers</div>
-                    <div class="mono" style="font-size: 1.25rem; font-weight: 700;">{peer_count} active</div>
+                <div class="card-header">
+                    <div class="card-title">Broker Status & Telemetry</div>
+                </div>
+                <div class="hud-grid" style="grid-template-columns: 1fr 1fr; margin-bottom: 0.75rem;">
+                    <div class="hud-metric">
+                        <div class="hud-label">REGISTERED PEERS</div>
+                        <div class="hud-value">{peer_count} active</div>
+                    </div>
+                    <div class="hud-metric">
+                        <div class="hud-label">ENDPOINT CAPACITY</div>
+                        <div class="hud-value">{capacity} max</div>
+                    </div>
                 </div>
                 <div class="field">
-                    <div class="label">Concurrent Capacity</div>
-                    <div class="value">{capacity} endpoints</div>
+                    <div class="field-label">Storage Architecture</div>
+                    <div class="field-value">Zero-Knowledge In-Memory Store (Zero Disk Logs)</div>
                 </div>
                 <div class="field">
-                    <div class="label">Storage Policy</div>
-                    <div class="value">Zero-Knowledge In-Memory (Zero Logs)</div>
-                </div>
-                <div class="field">
-                    <div class="label">Authentication Policy</div>
-                    <div class="value">Ed25519 Cryptographic Proof-of-Possession</div>
+                    <div class="field-label">Cryptographic Verification</div>
+                    <div class="field-value">Ed25519 Proof-of-Possession Challenge Handshake</div>
                 </div>
             </div>
 
             <div class="card">
-                <h2>Protocols & Endpoints</h2>
+                <div class="card-header">
+                    <div class="card-title">Protocols & Interfaces</div>
+                </div>
                 <div class="field">
-                    <div class="label">WebSocket URL</div>
+                    <div class="field-label">WebSocket Rendezvous URL</div>
                     <div class="mono">ws://HOST:PORT/</div>
                 </div>
                 <div class="field">
-                    <div class="label">Wire Framing</div>
-                    <div class="value">JSON Envelope (RFC 6455 Text Frames)</div>
+                    <div class="field-label">Wire Protocol</div>
+                    <div class="field-value">JSON Envelopes over RFC 6455 Frames</div>
                 </div>
                 <div class="field">
-                    <div class="label">Health Check API</div>
-                    <div class="value">
-                        <a href="/health" style="color: var(--accent); text-decoration: none;">/health</a> &bull; 
-                        <a href="/api/info" style="color: var(--accent); text-decoration: none;">/api/info</a>
+                    <div class="field-label">Health & Probes</div>
+                    <div class="field-value">
+                        <a href="/health" class="link">/health</a> &bull; 
+                        <a href="/ready" class="link">/ready</a> &bull; 
+                        <a href="/api/info" class="link">/api/info</a>
                     </div>
                 </div>
                 <div class="field">
-                    <div class="label">Rate Limiter</div>
-                    <div class="value">5 req/s token bucket per device ID</div>
+                    <div class="field-label">Anti-Abuse Rate Limiting</div>
+                    <div class="field-value">Token Bucket (5 req/s burst tolerance per device ID)</div>
                 </div>
             </div>
 
             <div class="card grid-full">
-                <h2>Host Configuration Guide</h2>
+                <div class="card-header">
+                    <div class="card-title">Host Configuration Guide</div>
+                </div>
                 <div class="guide-step">
                     <div class="step-num">1</div>
                     <div class="step-text">
@@ -651,13 +759,13 @@ fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
                 <div class="guide-step">
                     <div class="step-num">2</div>
                     <div class="step-text">
-                        The host automatically registers its Ed25519 identity key and publishes its presence.
+                        The host daemon automatically registers its Ed25519 public key and publishes presence.
                     </div>
                 </div>
                 <div class="guide-step">
                     <div class="step-num">3</div>
                     <div class="step-text">
-                        Remote controllers connect to the same broker and route encrypted SDP offers/answers directly.
+                        Remote controllers connect to the same broker and route end-to-end encrypted SDP offers and answers.
                     </div>
                 </div>
             </div>
@@ -668,7 +776,7 @@ fn generate_signal_portal_html(broker: &RendezvousBroker) -> String {
         </footer>
     </div>
 </body>
-</html>"#,
+</html>"###,
         peer_count = peer_count,
         capacity = capacity
     )

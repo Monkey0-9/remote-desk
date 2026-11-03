@@ -481,7 +481,7 @@ export default function App() {
       : '192.168.1.11');
   const currentIp = selectedIp || primaryIp;
 
-  const connectionUri = `remotedesk://${currentIp}:${hostPort}`;
+  const connectionUri = `remotedesk://${currentIp}:${hostPort}?id=${overview.device_id}&name=${encodeURIComponent(overview.device_name)}`;
   const webPortalUri = `http://${currentIp}:${hostPort}/`;
   const rawAddressUri = `${currentIp}:${hostPort}`;
   const jsonPayload = JSON.stringify({
@@ -494,8 +494,10 @@ export default function App() {
   });
 
   let activeQrPayload = connectionUri;
-  if (qrFormat === 'app-full') {
-    activeQrPayload = `remotedesk://${currentIp}:${hostPort}?id=${overview.device_id}&name=${encodeURIComponent(overview.device_name)}`;
+  if (qrFormat === 'app') {
+    activeQrPayload = connectionUri;
+  } else if (qrFormat === 'app-short') {
+    activeQrPayload = `remotedesk://${currentIp}:${hostPort}`;
   } else if (qrFormat === 'web') {
     activeQrPayload = webPortalUri;
   } else if (qrFormat === 'raw') {
@@ -506,11 +508,11 @@ export default function App() {
 
   useEffect(() => {
     QRCode.toDataURL(activeQrPayload, {
-      width: 280,
-      margin: 2,
-      errorCorrectionLevel: 'M',
+      width: 320,
+      margin: 4,
+      errorCorrectionLevel: 'Q',
       color: {
-        dark: '#0a0f1d',
+        dark: '#000000',
         light: '#ffffff',
       },
     })
@@ -735,6 +737,128 @@ export default function App() {
                       },
                     ]}
                   />
+
+                  {/* Scan to Connect & Quick Pair Section */}
+                  <Container
+                    header={
+                      <Header
+                        variant="h2"
+                        description="Scan with the Remote-Desk Android app or smartphone camera for zero-trust pairing."
+                        actions={
+                          <SpaceBetween direction="horizontal" size="xs">
+                            <Button
+                              variant="normal"
+                              onClick={downloadQrCode}
+                              disabled={!qrDataUrl}
+                            >
+                              Download QR (.png)
+                            </Button>
+                            <Button
+                              variant="primary"
+                              onClick={() => copyToClipboard(activeQrPayload, 'Connection URI')}
+                            >
+                              Copy Connect URI
+                            </Button>
+                          </SpaceBetween>
+                        }
+                      >
+                        Scan to Connect
+                      </Header>
+                    }
+                  >
+                    <ColumnLayout columns={2} variant="text-grid">
+                      <div style={{ textAlign: 'center', padding: '12px 0' }}>
+                        <div
+                          style={{
+                            display: 'inline-block',
+                            padding: 16,
+                            background: '#ffffff',
+                            borderRadius: 16,
+                            boxShadow: '0 8px 32px rgba(0,0,0,0.45)',
+                          }}
+                        >
+                          {qrDataUrl ? (
+                            <img
+                              src={qrDataUrl}
+                              alt="Scan to Connect QR Code"
+                              width={240}
+                              height={240}
+                              style={{ display: 'block', borderRadius: 8 }}
+                            />
+                          ) : (
+                            <Box padding="xxl" textAlign="center">
+                              <StatusIndicator type="loading">Generating QR Code...</StatusIndicator>
+                            </Box>
+                          )}
+                        </div>
+                        <div style={{ marginTop: 10 }}>
+                          <Box variant="small" color="text-body-secondary">
+                            Point smartphone camera or Remote-Desk app to pair instantly
+                          </Box>
+                        </div>
+                      </div>
+
+                      <SpaceBetween size="m">
+                        <FormField label="Target Protocol / Format">
+                          <SegmentedControl
+                            selectedId={qrFormat}
+                            onChange={({ detail }) => setQrFormat(detail.selectedId)}
+                            options={[
+                              { text: 'App Link', id: 'app' },
+                              { text: 'Pairing JSON', id: 'json' },
+                              { text: 'Web Portal', id: 'web' },
+                              { text: 'Raw Socket', id: 'raw' },
+                            ]}
+                          />
+                        </FormField>
+
+                        {overview.interfaces.length > 1 && (
+                          <FormField label="Target Network Interface">
+                            <Select
+                              selectedOption={{
+                                label: `${currentIp} (${overview.interfaces.find((i) => i.ip === currentIp)?.name || 'Default'})`,
+                                value: currentIp,
+                              }}
+                              onChange={({ detail }) => setSelectedIp(detail.selectedOption.value || '')}
+                              options={overview.interfaces.map((iface) => ({
+                                label: `${iface.ip} (${iface.name}) - ${iface.is_loopback ? 'Loopback' : 'LAN'}`,
+                                value: iface.ip,
+                              }))}
+                            />
+                          </FormField>
+                        )}
+
+                        <FormField label="Active Connection URI">
+                          <div
+                            style={{
+                              background: '#080a0f',
+                              border: '1px solid var(--rd-border)',
+                              borderRadius: 8,
+                              padding: '8px 12px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 8,
+                            }}
+                          >
+                            <Box variant="code">
+                              <span style={{ wordBreak: 'break-all' }}>{activeQrPayload}</span>
+                            </Box>
+                            <Button
+                              variant="inline-link"
+                              onClick={() => copyToClipboard(activeQrPayload, 'Connection URI')}
+                            >
+                              Copy
+                            </Button>
+                          </div>
+                        </FormField>
+
+                        <Box variant="small" color="text-body-secondary">
+                          Secured by Ed25519 PoP handshake &bull; Mutual SAS verification &bull; ChaCha20-Poly1305 AEAD
+                        </Box>
+                      </SpaceBetween>
+                    </ColumnLayout>
+                  </Container>
 
                   {/* Discovered Interfaces Section */}
                   <Container header={<Header variant="h2">Discovered Reachable Network Interfaces</Header>}>
@@ -1312,10 +1436,10 @@ export default function App() {
               selectedId={qrFormat}
               onChange={({ detail }) => setQrFormat(detail.selectedId)}
               options={[
-                { text: 'App Connect (remotedesk://)', id: 'app' },
-                { text: 'App with Metadata', id: 'app-full' },
-                { text: 'Web Portal (http://)', id: 'web' },
+                { text: 'App Link', id: 'app' },
                 { text: 'Pairing JSON', id: 'json' },
+                { text: 'Web Portal', id: 'web' },
+                { text: 'Raw Socket', id: 'raw' },
               ]}
             />
           </FormField>

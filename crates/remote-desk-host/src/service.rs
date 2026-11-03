@@ -463,6 +463,16 @@ impl HostService {
             let path = raw_path.split('?').next().unwrap_or("/");
 
             match path {
+                "/portal" => {
+                    let html = self.generate_host_portal_html();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return Ok(());
+                }
                 "/health" | "/ready" => {
                     let body = format!(
                         "{{\"status\":\"ok\",\"device_id\":\"{}\"}}",
@@ -638,8 +648,28 @@ impl HostService {
                     return Ok(());
                 }
                 "/api/qrcode" => {
+                    let query = raw_path.split('?').nth(1).unwrap_or("");
+                    let ifaces = crate::interfaces::discover_network_interfaces();
+                    let custom_ip = query
+                        .split('&')
+                        .find(|kv| kv.starts_with("ip=") || kv.starts_with("interface="))
+                        .and_then(|kv| kv.split('=').nth(1))
+                        .map(url_decode);
+                    let primary_ip = custom_ip.unwrap_or_else(|| {
+                        ifaces
+                            .iter()
+                            .find(|i| !i.is_loopback)
+                            .map(|i| i.ip.clone())
+                            .unwrap_or_else(|| "127.0.0.1".to_string())
+                    });
+                    let port = self
+                        .config
+                        .bind_addr
+                        .split(':')
+                        .next_back()
+                        .unwrap_or("4443");
+
                     let payload = if raw_path.contains("payload=") {
-                        let query = raw_path.split('?').nth(1).unwrap_or("");
                         let encoded = query
                             .split('&')
                             .find(|kv| kv.starts_with("payload="))
@@ -647,37 +677,45 @@ impl HostService {
                             .unwrap_or("");
                         url_decode(encoded)
                     } else if raw_path.contains("uri=") {
-                        let query = raw_path.split('?').nth(1).unwrap_or("");
                         let encoded = query
                             .split('&')
                             .find(|kv| kv.starts_with("uri="))
                             .and_then(|kv| kv.strip_prefix("uri="))
                             .unwrap_or("");
                         url_decode(encoded)
-                    } else {
-                        let ifaces = crate::interfaces::discover_network_interfaces();
-                        let primary_ip = ifaces
-                            .iter()
-                            .find(|i| !i.is_loopback)
-                            .map(|i| i.ip.clone())
-                            .unwrap_or_else(|| "127.0.0.1".to_string());
-                        let port = self
-                            .config
-                            .bind_addr
-                            .split(':')
-                            .next_back()
-                            .unwrap_or("4443");
+                    } else if raw_path.contains("format=json") {
                         format!(
-                            "remotedesk://{}:{}?id={}",
+                            r#"{{"scheme":"remotedesk","id":"{}","name":"{}","ip":"{}","port":{}}}"#,
+                            self.device_id(),
+                            self.config.device_name,
+                            primary_ip,
+                            port
+                        )
+                    } else if raw_path.contains("format=web") {
+                        format!("http://{}:{}/", primary_ip, port)
+                    } else if raw_path.contains("format=raw") {
+                        format!("{}:{}", primary_ip, port)
+                    } else {
+                        format!(
+                            "remotedesk://{}:{}?id={}&name={}",
                             primary_ip,
                             port,
-                            self.device_id()
+                            self.device_id(),
+                            url_encode(&self.config.device_name)
                         )
                     };
 
                     let svg = generate_qr_svg(&payload);
+                    let disposition = if raw_path.contains("download=true")
+                        || raw_path.contains("download=1")
+                    {
+                        format!("\r\nContent-Disposition: attachment; filename=\"remotedesk-qr-{}.svg\"", self.device_id())
+                    } else {
+                        String::new()
+                    };
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache, no-store, must-revalidate{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        disposition,
                         svg.len(),
                         svg
                     );
@@ -1071,10 +1109,10 @@ impl HostService {
         let device_name = html_escape(&self.config.device_name);
         let bind_addr = html_escape(&self.config.bind_addr);
         let fingerprint = html_escape(&self.identity.fingerprint_hex());
-        let unattended_text = if self.config.unattended {
-            "<span style=\"color:#10b981;font-weight:600;\">Enabled (Auto-Approve)</span>"
+        let unattended_badge = if self.config.unattended {
+            "<span class=\"pill pill-emerald\">Enabled (Direct Auth)</span>"
         } else {
-            "<span style=\"color:#f59e0b;font-weight:600;\">Disabled (Manual Host SAS Confirmation)</span>"
+            "<span class=\"pill pill-amber\">Manual Host SAS Approval</span>"
         };
         let ifaces = crate::interfaces::discover_network_interfaces();
         let primary_ip = ifaces
@@ -1089,106 +1127,152 @@ impl HostService {
             .next_back()
             .unwrap_or("4443");
         let qr_uri = format!(
-            "remotedesk://{}:{}?id={}",
+            "remotedesk://{}:{}?id={}&name={}",
             primary_ip,
             port,
-            self.device_id()
+            self.device_id(),
+            url_encode(&self.config.device_name)
         );
         let qr_svg = generate_qr_svg(&qr_uri);
+        let ifaces_json = serde_json::to_string(&ifaces).unwrap_or_else(|_| "[]".to_string());
 
         format!(
-            r#"<!DOCTYPE html>
+            r###"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Remote-Desk Host Streaming Node</title>
+    <title>Remote-Desk Host &bull; Streaming Node Console</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
     <style>
         :root {{
-            --bg: #0a0f1d;
-            --surface: #111827;
-            --border: #1e293b;
-            --text: #f8fafc;
-            --text-dim: #94a3b8;
+            --bg-base: #08090c;
+            --bg-surface: #0e1118;
+            --bg-card: #131722;
+            --bg-card-hover: #181d2b;
+            --border: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(255, 255, 255, 0.16);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
             --accent: #38bdf8;
             --accent-glow: rgba(56, 189, 248, 0.15);
-            --success: #10b981;
-            --mono-bg: #1e293b;
+            --emerald: #10b981;
+            --emerald-glow: rgba(16, 185, 129, 0.18);
+            --amber: #f59e0b;
+            --rose: #f43f5e;
+            --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         }}
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
-            font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: var(--bg);
-            color: var(--text);
+            font-family: var(--font-sans);
+            background: var(--bg-base);
+            color: var(--text-primary);
             line-height: 1.6;
-            padding: 2.5rem 1rem;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
+            padding: 2.5rem 1rem;
+            -webkit-font-smoothing: antialiased;
         }}
         .container {{
             width: 100%;
-            max-width: 800px;
+            max-width: 880px;
         }}
         header {{
-            margin-bottom: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
             text-align: center;
+            margin-bottom: 2rem;
+            gap: 0.75rem;
         }}
-        .badge {{
+        .header-top {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+        }}
+        .logo-mark {{
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        }}
+        .status-pill {{
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            background: rgba(16, 185, 129, 0.15);
-            color: var(--success);
-            border: 1px solid rgba(16, 185, 129, 0.3);
+            background: rgba(16, 185, 129, 0.12);
+            color: var(--emerald);
+            border: 1px solid rgba(16, 185, 129, 0.28);
             border-radius: 9999px;
             padding: 0.35rem 0.85rem;
-            font-size: 0.875rem;
+            font-size: 0.775rem;
             font-weight: 600;
-            margin-bottom: 1rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
         }}
-        .pulse-dot {{
-            width: 8px;
-            height: 8px;
-            background: var(--success);
+        .status-dot {{
+            width: 7px;
+            height: 7px;
+            background: var(--emerald);
             border-radius: 50%;
-            box-shadow: 0 0 8px var(--success);
+            box-shadow: 0 0 8px var(--emerald);
         }}
         h1 {{
-            font-size: 2.25rem;
+            font-size: 2rem;
             font-weight: 700;
-            color: #ffffff;
-            margin-bottom: 0.5rem;
             letter-spacing: -0.025em;
+            color: #ffffff;
+            margin-top: 0.25rem;
         }}
         .subtitle {{
-            color: var(--text-dim);
-            font-size: 1rem;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            max-width: 600px;
         }}
         .grid {{
             display: grid;
             grid-template-columns: 1fr;
             gap: 1.5rem;
-            margin-bottom: 2rem;
+            margin-bottom: 1.75rem;
         }}
-        @media (min-width: 640px) {{
+        @media (min-width: 680px) {{
             .grid {{ grid-template-columns: 1fr 1fr; }}
             .grid-full {{ grid-column: span 2; }}
         }}
         .card {{
-            background: var(--surface);
+            background: var(--bg-card);
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 14px;
             padding: 1.5rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
+            display: flex;
+            flex-direction: column;
+            position: relative;
         }}
-        .card h2 {{
-            font-size: 1.125rem;
+        .card-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }}
+        .card-title {{
+            font-size: 1.05rem;
+            font-weight: 600;
             color: #ffffff;
-            margin-bottom: 1rem;
+            letter-spacing: -0.01em;
             display: flex;
             align-items: center;
             gap: 0.5rem;
@@ -1199,26 +1283,213 @@ impl HostService {
         .field:last-child {{
             margin-bottom: 0;
         }}
-        .label {{
-            font-size: 0.75rem;
+        .field-label {{
+            font-size: 0.725rem;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-dim);
-            margin-bottom: 0.25rem;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 0.35rem;
+            font-weight: 600;
         }}
-        .value {{
+        .field-value {{
             font-size: 0.95rem;
             font-weight: 500;
+            color: var(--text-primary);
         }}
         .mono {{
-            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            background: var(--mono-bg);
-            padding: 0.25rem 0.5rem;
+            font-family: var(--font-mono);
+            background: #080a0f;
+            border: 1px solid var(--border);
+            padding: 0.3rem 0.6rem;
             border-radius: 6px;
             font-size: 0.85rem;
             color: var(--accent);
             word-break: break-all;
             display: inline-block;
+        }}
+        .pill {{
+            display: inline-flex;
+            align-items: center;
+            border-radius: 9999px;
+            padding: 0.2rem 0.6rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }}
+        .pill-emerald {{
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--emerald);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }}
+        .pill-amber {{
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--amber);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }}
+        .pill-subtle {{
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }}
+        .form-select {{
+            width: 100%;
+            background: #080a0f;
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.55rem 0.75rem;
+            font-family: var(--font-sans);
+            font-size: 0.875rem;
+            outline: none;
+            cursor: pointer;
+            transition: border-color 0.15s ease;
+            margin-bottom: 0.85rem;
+        }}
+        .form-select:focus {{
+            border-color: var(--accent);
+        }}
+        .tabs {{
+            display: flex;
+            background: #080a0f;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 3px;
+            gap: 3px;
+            margin-bottom: 1rem;
+        }}
+        .tab-btn {{
+            flex: 1;
+            background: transparent;
+            color: var(--text-secondary);
+            border: none;
+            border-radius: 6px;
+            padding: 0.4rem 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-align: center;
+        }}
+        .tab-btn.active {{
+            background: var(--bg-card);
+            color: #ffffff;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border);
+        }}
+        .tab-btn:hover:not(.active) {{
+            color: var(--text-primary);
+        }}
+        .qr-frame {{
+            width: 256px;
+            height: 256px;
+            background: #ffffff;
+            border-radius: 14px;
+            padding: 12px;
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+            margin: 0.5rem auto 1.25rem;
+        }}
+        .qr-frame svg {{
+            width: 100% !important;
+            height: 100% !important;
+            max-width: 100%;
+            max-height: 100%;
+            display: block;
+            shape-rendering: crispEdges;
+        }}
+        .uri-bar {{
+            display: flex;
+            align-items: center;
+            background: #080a0f;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }}
+        .uri-text {{
+            flex: 1;
+            font-family: var(--font-mono);
+            font-size: 0.825rem;
+            color: var(--accent);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            user-select: all;
+        }}
+        .btn-copy {{
+            background: rgba(56, 189, 248, 0.12);
+            color: var(--accent);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            border-radius: 6px;
+            padding: 0.35rem 0.75rem;
+            font-size: 0.775rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }}
+        .btn-copy:hover {{
+            background: rgba(56, 189, 248, 0.22);
+            border-color: var(--accent);
+        }}
+        .action-row {{
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+        }}
+        .btn-subtle {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.4rem;
+            background: #181d2b;
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.45rem 0.85rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s ease;
+        }}
+        .btn-subtle:hover {{
+            background: #202738;
+            border-color: rgba(255, 255, 255, 0.15);
+        }}
+        .hud-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+        }}
+        @media (min-width: 640px) {{
+            .hud-grid {{ grid-template-columns: repeat(4, 1fr); }}
+        }}
+        .hud-metric {{
+            background: #080a0f;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.85rem 1rem;
+        }}
+        .hud-label {{
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+            font-weight: 600;
+        }}
+        .hud-value {{
+            font-family: var(--font-mono);
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: #ffffff;
+            font-variant-numeric: tabular-nums;
         }}
         .guide-step {{
             display: flex;
@@ -1233,141 +1504,473 @@ impl HostService {
             background: var(--accent-glow);
             color: var(--accent);
             border: 1px solid var(--accent);
-            width: 28px;
-            height: 28px;
+            width: 26px;
+            height: 26px;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 700;
-            font-size: 0.875rem;
+            font-size: 0.8rem;
             flex-shrink: 0;
+            margin-top: 2px;
         }}
         .step-text {{
-            color: var(--text-dim);
-            font-size: 0.95rem;
+            color: var(--text-secondary);
+            font-size: 0.925rem;
         }}
         .step-text strong {{
-            color: var(--text);
+            color: var(--text-primary);
+        }}
+        .link {{
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+        }}
+        .link:hover {{
+            text-decoration: underline;
         }}
         footer {{
             text-align: center;
-            color: var(--text-dim);
-            font-size: 0.875rem;
+            color: var(--text-muted);
+            font-size: 0.825rem;
             border-top: 1px solid var(--border);
             padding-top: 1.5rem;
             width: 100%;
+            margin-top: 1rem;
+        }}
+        .toast {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: #1e293b;
+            color: #ffffff;
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+            border-radius: 8px;
+            padding: 10px 18px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: none;
+            z-index: 9999;
+        }}
+        .toast.show {{
+            transform: translateY(0);
+            opacity: 1;
         }}
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <div class="badge">
-                <span class="pulse-dot"></span>
-                ACTIVE STREAMING NODE
+            <div class="header-top">
+                <div class="logo-mark">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                        <line x1="8" y1="21" x2="16" y2="21"/>
+                        <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                </div>
+                <div class="status-pill">
+                    <span class="status-dot"></span>
+                    ACTIVE HOST NODE
+                </div>
             </div>
             <h1>Remote-Desk Host</h1>
             <p class="subtitle">Secure, Zero-Trust Hardware-Accelerated Remote Desktop Daemon</p>
         </header>
 
         <div class="grid">
+            <!-- Scan to Connect / Quick Pair Card -->
             <div class="card">
-                <h2>Host Identification</h2>
-                <div class="field">
-                    <div class="label">Device ID</div>
-                    <div class="mono" style="font-size: 1.1rem; font-weight: 700;">{device_id}</div>
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2">
+                            <rect x="3" y="3" width="7" height="7"></rect>
+                            <rect x="14" y="3" width="7" height="7"></rect>
+                            <rect x="14" y="14" width="7" height="7"></rect>
+                            <rect x="3" y="14" width="7" height="7"></rect>
+                        </svg>
+                        Scan to Connect
+                    </div>
+                    <span class="pill pill-subtle">High Contrast QR</span>
                 </div>
+
                 <div class="field">
-                    <div class="label">Host Name</div>
-                    <div class="value">{device_name}</div>
+                    <div class="field-label">Target Network Interface</div>
+                    <select id="iface-select" class="form-select" onchange="onIfaceChange(this.value)"></select>
                 </div>
-                <div class="field">
-                    <div class="label">Unattended Mode</div>
-                    <div class="value">{unattended_text}</div>
+
+                <div class="tabs">
+                    <button class="tab-btn active" id="tab-app" onclick="setFormat('app', this)">App Link</button>
+                    <button class="tab-btn" id="tab-json" onclick="setFormat('json', this)">JSON</button>
+                    <button class="tab-btn" id="tab-web" onclick="setFormat('web', this)">Web Portal</button>
+                    <button class="tab-btn" id="tab-raw" onclick="setFormat('raw', this)">Raw IP:Port</button>
                 </div>
+
+                <div class="qr-frame">
+                    <div id="qr-box" style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+                        {qr_svg}
+                    </div>
+                </div>
+
+                <div class="field-label">Connection URI Payload</div>
+                <div class="uri-bar">
+                    <span class="uri-text" id="uri-display">{qr_uri}</span>
+                    <button class="btn-copy" onclick="copyCurrentUri()">Copy</button>
+                </div>
+
+                <div class="action-row">
+                    <button class="btn-subtle" onclick="downloadQrSvg()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="7 10 12 15 17 10"></polyline>
+                            <line x1="12" y1="15" x2="12" y2="3"></line>
+                        </svg>
+                        Download SVG
+                    </button>
+                    <a id="web-portal-link" href="http://{primary_ip}:{port}/" target="_blank" class="btn-subtle">
+                        Open Web Portal &rarr;
+                    </a>
+                </div>
+            </div>
+
+            <!-- Host Security & Identification Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                        Host Identity & Security
+                    </div>
+                    <span class="pill pill-subtle">Zero-Trust PoP</span>
+                </div>
+
                 <div class="field">
-                    <div class="label">Fingerprint</div>
+                    <div class="field-label">Host Device ID</div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span class="mono" style="font-size: 1.05rem; font-weight: 700;">{device_id}</span>
+                        <button class="btn-copy" onclick="copyText('{device_id}', 'Device ID copied')">Copy</button>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <div class="field-label">Friendly Host Name</div>
+                    <div class="field-value">{device_name}</div>
+                </div>
+
+                <div class="field">
+                    <div class="field-label">Unattended Access</div>
+                    <div>{unattended_badge}</div>
+                </div>
+
+                <div class="field">
+                    <div class="field-label">Ed25519 Fingerprint</div>
                     <div class="mono" style="font-size: 0.75rem;">{fingerprint}</div>
                 </div>
-            </div>
 
-            <div class="card" style="text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                <h2>Scan to Connect</h2>
-                <div style="background: #ffffff; padding: 12px; border-radius: 12px; display: inline-block; margin: 0.5rem 0; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); max-width: 224px;">
-                    {qr_svg}
-                </div>
-                <div class="label" style="margin-top: 0.5rem;">Direct Connection URI</div>
-                <div class="mono" style="font-size: 0.85rem; margin-top: 0.25rem;">{qr_uri}</div>
-                <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 0.5rem;">Point camera or Remote-Desk app to pair</div>
-            </div>
-
-            <div class="card">
-                <h2>Networking & Security</h2>
                 <div class="field">
-                    <div class="label">Listener Address</div>
+                    <div class="field-label">Mutual Verification (SAS)</div>
+                    <div class="field-value" style="font-size: 0.875rem; color: var(--text-secondary);">
+                        HKDF-SHA256 Short Authentication String & Replay Defense
+                    </div>
+                </div>
+
+                <div class="field">
+                    <div class="field-label">Host Listener Socket</div>
                     <div class="mono">{bind_addr}</div>
                 </div>
+
                 <div class="field">
-                    <div class="label">Cryptographic Protocol</div>
-                    <div class="value">Ed25519 PoP + X25519 Ephemeral DH</div>
-                </div>
-                <div class="field">
-                    <div class="label">Pairing Verification</div>
-                    <div class="value">HKDF SAS Code & Sliding Replay Window</div>
-                </div>
-                <div class="field">
-                    <div class="label">API Endpoints</div>
-                    <div class="value">
-                        <a href="/health" style="color: var(--accent); text-decoration: none;">/health</a> &bull; 
-                        <a href="/api/info" style="color: var(--accent); text-decoration: none;">/api/info</a> &bull; 
-                        <a href="/api/qrcode" style="color: var(--accent); text-decoration: none;">/api/qrcode</a>
+                    <div class="field-label">Diagnostic Endpoints</div>
+                    <div class="field-value" style="font-size: 0.85rem;">
+                        <a href="/health" class="link">/health</a> &bull; 
+                        <a href="/api/overview" class="link">/api/overview</a> &bull; 
+                        <a href="/api/performance" class="link">/api/performance</a> &bull; 
+                        <a href="/api/qrcode" class="link">/api/qrcode</a>
                     </div>
                 </div>
             </div>
 
+            <!-- Live Telemetry & Control HUD -->
             <div class="card grid-full">
-                <h2>Client Connection Guide</h2>
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                        </svg>
+                        Live System Telemetry HUD
+                    </div>
+                    <span class="status-pill" id="hud-poll-status" style="font-size: 0.7rem; padding: 0.2rem 0.6rem;">
+                        <span class="status-dot"></span> LIVE
+                    </span>
+                </div>
+
+                <div class="hud-grid">
+                    <div class="hud-metric">
+                        <div class="hud-label">STREAMING SESSIONS</div>
+                        <div class="hud-value" id="hud-sessions">0 Active</div>
+                    </div>
+                    <div class="hud-metric">
+                        <div class="hud-label">VIDEO FRAMERATE</div>
+                        <div class="hud-value" id="hud-fps">60.0 fps</div>
+                    </div>
+                    <div class="hud-metric">
+                        <div class="hud-label">CAPTURE LATENCY</div>
+                        <div class="hud-value" id="hud-latency">&lt; 3.8 ms</div>
+                    </div>
+                    <div class="hud-metric">
+                        <div class="hud-label">CAPTURE BACKEND</div>
+                        <div class="hud-value" id="hud-backend" style="font-size: 0.95rem;">Ready</div>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <button class="btn-subtle" onclick="testHealth()">Test Health (/health)</button>
+                    <a href="/api/diagnostics/export" class="btn-subtle" download="diagnostics.json">Export Diagnostics</a>
+                    <button class="btn-subtle" style="color: var(--rose); border-color: rgba(244, 63, 94, 0.3);" onclick="terminateSession()">Emergency Terminate</button>
+                </div>
+            </div>
+
+            <!-- Client Connection Guide -->
+            <div class="card grid-full">
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="16" x2="12" y2="12"></line>
+                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                        </svg>
+                        Zero-Trust Client Pairing Guide
+                    </div>
+                </div>
+
                 <div class="guide-step">
                     <div class="step-num">1</div>
                     <div class="step-text">
-                        Launch the <strong>Remote-Desk Android app</strong> or compatible client on your local network.
+                        Launch the <strong>Remote-Desk Android app</strong> or desktop client on your network.
                     </div>
                 </div>
                 <div class="guide-step">
                     <div class="step-num">2</div>
                     <div class="step-text">
-                        Enter target Host Device ID <code class="mono">{device_id}</code> or direct host address <code class="mono">{bind_addr}</code>.
+                        Scan the <strong>High-Contrast QR Code</strong> above or input the Device ID <code class="mono">{device_id}</code>.
                     </div>
                 </div>
                 <div class="guide-step">
                     <div class="step-num">3</div>
                     <div class="step-text">
-                        Verify the Short Authentication String (SAS) code matching on both screens for tamper-proof pairing.
+                        Verify the matching <strong>6-digit SAS code</strong> on both screens to establish cryptographic mutual authentication.
                     </div>
                 </div>
                 <div class="guide-step">
                     <div class="step-num">4</div>
                     <div class="step-text">
-                        Once authorized, low-latency desktop video streaming and input control initialize instantly.
+                        High-performance low-latency desktop video streaming and input injection start immediately.
                     </div>
                 </div>
             </div>
         </div>
 
         <footer>
-            Remote-Desk v0.1.0 &bull; Built with Rust &bull; End-to-End Authenticated
+            Remote-Desk v0.1.0 &bull; Built with Rust &bull; End-to-End Cryptographically Authenticated
         </footer>
     </div>
+
+    <div id="toast" class="toast">Copied to clipboard</div>
+
+    <script>
+        const DEVICE_ID = "{device_id}";
+        const DEVICE_NAME = "{device_name}";
+        const PORT = "{port}";
+        const IFACES = {ifaces_json};
+        let currentIp = "{primary_ip}";
+        let currentFormat = "app";
+
+        // Initialize interface dropdown
+        const ifaceSelect = document.getElementById("iface-select");
+        if (IFACES && IFACES.length > 0) {{
+            IFACES.forEach((iface) => {{
+                const opt = document.createElement("option");
+                opt.value = iface.ip;
+                const typeLabel = iface.is_loopback ? "Loopback" : "LAN";
+                opt.textContent = `${{iface.name}} (${{iface.ip}}) - ${{typeLabel}}`;
+                if (iface.ip === currentIp) opt.selected = true;
+                ifaceSelect.appendChild(opt);
+            }});
+        }} else {{
+            const opt = document.createElement("option");
+            opt.value = currentIp;
+            opt.textContent = `Default (${{currentIp}})`;
+            ifaceSelect.appendChild(opt);
+        }}
+
+        function computeUri() {{
+            const encodedName = encodeURIComponent(DEVICE_NAME);
+            if (currentFormat === "app") {{
+                return `remotedesk://${{currentIp}}:${{PORT}}?id=${{DEVICE_ID}}&name=${{encodedName}}`;
+            }} else if (currentFormat === "json") {{
+                return JSON.stringify({{
+                    scheme: "remotedesk",
+                    id: DEVICE_ID,
+                    name: DEVICE_NAME,
+                    ip: currentIp,
+                    port: parseInt(PORT, 10)
+                }});
+            }} else if (currentFormat === "web") {{
+                return `http://${{currentIp}}:${{PORT}}/`;
+            }} else if (currentFormat === "raw") {{
+                return `${{currentIp}}:${{PORT}}`;
+            }}
+            return `remotedesk://${{currentIp}}:${{PORT}}?id=${{DEVICE_ID}}&name=${{encodedName}}`;
+        }}
+
+        async function updateQr() {{
+            const uri = computeUri();
+            document.getElementById("uri-display").textContent = uri;
+            const webLink = document.getElementById("web-portal-link");
+            if (webLink) webLink.href = `http://${{currentIp}}:${{PORT}}/`;
+
+            const qrBox = document.getElementById("qr-box");
+            try {{
+                const resp = await fetch(`/api/qrcode?payload=${{encodeURIComponent(uri)}}`);
+                if (resp.ok) {{
+                    const svgText = await resp.text();
+                    qrBox.innerHTML = svgText;
+                }}
+            }} catch (err) {{
+                console.error("Failed to update QR code:", err);
+            }}
+        }}
+
+        function onIfaceChange(newIp) {{
+            currentIp = newIp;
+            updateQr();
+        }}
+
+        function setFormat(fmt, btn) {{
+            currentFormat = fmt;
+            document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            updateQr();
+        }}
+
+        function showToast(msg) {{
+            const t = document.getElementById("toast");
+            t.textContent = msg;
+            t.classList.add("show");
+            setTimeout(() => t.classList.remove("show"), 2200);
+        }}
+
+        function copyText(text, successMsg) {{
+            navigator.clipboard.writeText(text).then(() => {{
+                showToast(successMsg || "Copied to clipboard");
+            }}).catch(() => {{
+                const el = document.createElement("textarea");
+                el.value = text;
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand("copy");
+                document.body.removeChild(el);
+                showToast(successMsg || "Copied to clipboard");
+            }});
+        }}
+
+        function copyCurrentUri() {{
+            copyText(computeUri(), "Connection URI copied");
+        }}
+
+        function downloadQrSvg() {{
+            const qrBox = document.getElementById("qr-box");
+            const svgEl = qrBox.querySelector("svg");
+            if (!svgEl) return;
+            const svgData = new XMLSerializer().serializeToString(svgEl);
+            const blob = new Blob([svgData], {{ type: "image/svg+xml;charset=utf-8" }});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `remotedesk-qr-${{DEVICE_ID}}.svg`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast("Downloaded QR Code (.svg)");
+        }}
+
+        async function testHealth() {{
+            try {{
+                const res = await fetch("/health");
+                const json = await res.json();
+                showToast(`Health Check: status=${{json.status}}`);
+            }} catch (e) {{
+                showToast("Health check failed");
+            }}
+        }}
+
+        async function terminateSession() {{
+            if (!confirm("Are you sure you want to terminate any active streaming sessions?")) return;
+            try {{
+                const res = await fetch("/api/session/terminate", {{ method: "POST" }});
+                if (res.ok) showToast("Active session terminated");
+                else showToast("Session termination failed");
+            }} catch (e) {{
+                showToast("Request failed");
+            }}
+        }}
+
+        // Live telemetry polling
+        async function pollTelemetry() {{
+            try {{
+                const [overviewRes, perfRes] = await Promise.all([
+                    fetch("/api/overview").then(r => r.json()).catch(() => null),
+                    fetch("/api/performance").then(r => r.json()).catch(() => null)
+                ]);
+
+                if (overviewRes) {{
+                    const sessEl = document.getElementById("hud-sessions");
+                    if (sessEl) {{
+                        sessEl.textContent = overviewRes.session_active
+                            ? `1 Active (${{overviewRes.active_peer || "Peer"}})`
+                            : "0 Active";
+                    }}
+                    const backendEl = document.getElementById("hud-backend");
+                    if (backendEl && overviewRes.capture_backend) {{
+                        backendEl.textContent = overviewRes.capture_backend;
+                    }}
+                }}
+
+                if (perfRes) {{
+                    const fpsEl = document.getElementById("hud-fps");
+                    if (fpsEl && perfRes.fps_delivered !== undefined) {{
+                        fpsEl.textContent = `${{perfRes.fps_delivered.toFixed(1)}} fps`;
+                    }}
+                    const latEl = document.getElementById("hud-latency");
+                    if (latEl && perfRes.encode_latency_ms !== undefined) {{
+                        latEl.textContent = `${{perfRes.encode_latency_ms.toFixed(1)}} ms`;
+                    }}
+                }}
+            }} catch (err) {{}}
+        }}
+
+        setInterval(pollTelemetry, 2500);
+    </script>
 </body>
-</html>"#,
+</html>"###,
             device_id = device_id,
             device_name = device_name,
-            unattended_text = unattended_text,
-            fingerprint = fingerprint,
             bind_addr = bind_addr,
+            unattended_badge = unattended_badge,
+            fingerprint = fingerprint,
             qr_svg = qr_svg,
-            qr_uri = qr_uri
+            qr_uri = qr_uri,
+            primary_ip = primary_ip,
+            port = port,
+            ifaces_json = ifaces_json
         )
     }
 }
@@ -1378,14 +1981,34 @@ pub fn generate_qr_svg(content: &str) -> String {
     use qrcode::QrCode;
 
     match QrCode::new(content.as_bytes()) {
-        Ok(code) => code
-            .render::<svg::Color>()
-            .min_dimensions(190, 190)
-            .dark_color(svg::Color("#0a0f1d"))
-            .light_color(svg::Color("#ffffff"))
-            .build(),
-        Err(_) => r##"<svg xmlns="http://www.w3.org/2000/svg" width="190" height="190"><rect width="190" height="190" fill="#fee2e2"/><text x="15" y="100" fill="#991b1b" font-family="sans-serif" font-size="13">QR Generation Error</text></svg>"##.to_string(),
+        Ok(code) => {
+            let raw_svg = code
+                .render::<svg::Color>()
+                .min_dimensions(240, 240)
+                .quiet_zone(true)
+                .dark_color(svg::Color("#000000"))
+                .light_color(svg::Color("#ffffff"))
+                .build();
+            if let Some(pos) = raw_svg.find("<svg") {
+                raw_svg[pos..].to_string()
+            } else {
+                raw_svg
+            }
+        }
+        Err(_) => r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240"><rect width="240" height="240" fill="#fee2e2" rx="12"/><text x="35" y="125" fill="#991b1b" font-family="sans-serif" font-size="14" font-weight="600">QR Generation Error</text></svg>"##.to_string(),
     }
+}
+
+pub fn url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+            result.push(b as char);
+        } else {
+            result.push_str(&format!("%{:02X}", b));
+        }
+    }
+    result
 }
 
 pub fn url_decode(s: &str) -> String {

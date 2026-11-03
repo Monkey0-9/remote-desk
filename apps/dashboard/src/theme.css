@@ -1,4 +1,4 @@
-/* Remote-Desk Professional UI Design System & High-Tech Cyber Console */
+/* Remote-Desk Professional UI Design System & Top 1% Developer Console */
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap');
 
 :root {
@@ -6,20 +6,20 @@
   --rd-font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --rd-font-display: 'Outfit', var(--rd-font-sans);
 
-  /* Cyber & OLED Dark Palette per ui-ux-pro-max */
-  --rd-bg-base: #0a0f1d;
-  --rd-bg-surface: #111827;
-  --rd-bg-card: #182235;
-  --rd-bg-hover: #1f2d45;
-  --rd-border: #2d3b55;
-  --rd-border-subtle: #1e293b;
+  /* Modern Obsidian & OLED Palette */
+  --rd-bg-base: #08090c;
+  --rd-bg-surface: #0e1118;
+  --rd-bg-card: #131722;
+  --rd-bg-hover: #181d2b;
+  --rd-border: rgba(255, 255, 255, 0.08);
+  --rd-border-subtle: rgba(255, 255, 255, 0.05);
 
-  --rd-primary: #3b82f6;
-  --rd-primary-glow: rgba(59, 130, 246, 0.25);
+  --rd-primary: #38bdf8;
+  --rd-primary-glow: rgba(56, 189, 248, 0.15);
   --rd-accent: #10b981;
-  --rd-accent-glow: rgba(16, 185, 129, 0.25);
+  --rd-accent-glow: rgba(16, 185, 129, 0.15);
   --rd-warning: #f59e0b;
-  --rd-danger: #ef4444;
+  --rd-danger: #f43f5e;
 
   --rd-text-primary: #f8fafc;
   --rd-text-secondary: #94a3b8;
@@ -42,49 +42,25 @@ canvas + div {
   font-variant-numeric: tabular-nums;
 }
 
-/* Pulsing Status Badges */
-@keyframes rd-pulse-green {
-  0% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
-  }
-  70% {
-    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
-  }
-}
-
-@keyframes rd-pulse-blue {
-  0% {
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.6);
-  }
-  70% {
-    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
-  }
-}
-
+/* Steady, Tasteful Status Dots */
 .status-dot-active {
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   background-color: #10b981;
   border-radius: 50%;
   margin-right: 8px;
-  animation: rd-pulse-green 2s infinite;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
 }
 
 .status-dot-streaming {
   display: inline-block;
-  width: 10px;
-  height: 10px;
-  background-color: #3b82f6;
+  width: 8px;
+  height: 8px;
+  background-color: #38bdf8;
   border-radius: 50%;
   margin-right: 8px;
-  animation: rd-pulse-blue 1.5s infinite;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
 }
 
 /* Custom interactive Canvas frame */
@@ -97,7 +73,7 @@ canvas + div {
 }
 
 .canvas-container:hover {
-  box-shadow: 0 25px 50px -12px rgba(59, 130, 246, 0.2), 0 0 0 1px var(--rd-primary);
+  box-shadow: 0 25px 50px -12px rgba(56, 189, 248, 0.2), 0 0 0 1px var(--rd-primary);
 }
 
 /* HUD Overlay on Canvas */
@@ -105,7 +81,7 @@ canvas + div {
   position: absolute;
   top: 12px;
   left: 12px;
-  background: rgba(15, 23, 42, 0.85);
+  background: rgba(14, 17, 24, 0.88);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
@@ -122,9 +98,9 @@ canvas + div {
 /* Interactive SAS Code Display Box */
 .sas-code-display {
   display: inline-block;
-  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-  border: 2px solid #3b82f6;
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+  background: linear-gradient(135deg, #181d2b 0%, #0e1118 100%);
+  border: 1px solid #38bdf8;
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.2);
   padding: 12px 32px;
   border-radius: 12px;
   font-family: var(--rd-font-mono);
@@ -132,7 +108,7 @@ canvas + div {
   font-weight: 700;
   letter-spacing: 6px;
   color: #38bdf8;
-  text-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+  text-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
 }
 
 /* Quick copy button feedback */
@@ -156,7 +132,7 @@ canvas + div {
 
 /* Glassmorphism Card Style */
 .glass-card {
-  background: rgba(24, 34, 53, 0.75) !important;
+  background: rgba(19, 23, 34, 0.85) !important;
   backdrop-filter: blur(12px) !important;
   border: 1px solid var(--rd-border) !important;
   border-radius: 12px !important;
@@ -174,4 +150,21 @@ canvas + div {
   background-color: var(--rd-primary);
   border-radius: 1px;
   opacity: 0.85;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--rd-bg-base);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--rd-bg-hover);
+  border-radius: 4px;
+  border: 1px solid var(--rd-border);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
