@@ -113,7 +113,29 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew testDebugUnitTest --stacktrace
+          ./gradlew testDebugUnitTest --stacktrace 2>&1 | tee gradle_test.log || {
+            echo "::error::Gradle testDebugUnitTest failed!"
+            python3 -c "
+import glob, xml.etree.ElementTree as ET
+found_failures = False
+for f in glob.glob('**/test-results/**/*.xml', recursive=True):
+    try:
+        tree = ET.parse(f)
+        for tc in tree.findall('.//testcase'):
+            for fl in tc.findall('failure'):
+                found_failures = True
+                msg = (fl.get('message') or fl.text or '')[:300].replace('\n', ' ')
+                print(f'::error title=Failed Test {tc.get(\"classname\")}.{tc.get(\"name\")}::{msg}')
+    except Exception:
+        pass
+if not found_failures:
+    with open('gradle_test.log', 'r') as gf:
+        lines = [line.strip() for line in gf if any(x in line for x in ['FAILURE:', 'e:', 'error:', 'Exception', 'Caused by:', 'Duplicate class'])]
+        for l in lines[-15:]:
+            print(f'::error title=Gradle Error::{l[:300]}')
+"
+            exit 1
+          }
 
   # 8. Rust/Kotlin Protocol Compatibility Tests
   protocol-golden-vectors:
