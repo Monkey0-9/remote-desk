@@ -185,7 +185,7 @@ impl WindowsInputInjectorBackend for SendInputInjector {
             let mut input: INPUT = std::mem::zeroed();
             input.r#type = INPUT_MOUSE;
             input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
-            input.Anonymous.mi.mouseData = (_delta as i32) * 120; // WHEEL_DELTA
+            input.Anonymous.mi.mouseData = ((_delta as i32) * 120) as u32; // WHEEL_DELTA
             Self::send_win32_input(input)?;
         }
 
@@ -200,7 +200,7 @@ impl WindowsInputInjectorBackend for SendInputInjector {
             let mut input: INPUT = std::mem::zeroed();
             input.r#type = INPUT_MOUSE;
             input.Anonymous.mi.dwFlags = MOUSEEVENTF_HWHEEL;
-            input.Anonymous.mi.mouseData = (_delta as i32) * 120; // WHEEL_DELTA
+            input.Anonymous.mi.mouseData = ((_delta as i32) * 120) as u32; // WHEEL_DELTA
             Self::send_win32_input(input)?;
         }
 
