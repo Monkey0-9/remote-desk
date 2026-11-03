@@ -1,0 +1,5 @@
+target/
+.git/
+android/
+apps/dashboard/node_modules/
+apps/dashboard/dist/

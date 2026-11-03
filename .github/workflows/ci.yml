@@ -106,8 +106,9 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Android SDK Licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
       - name: Run Android Unit Tests
         run: |
           cd android
@@ -237,6 +238,7 @@ jobs:
         run: openspec validate --all
       - name: Generate Checksums
         run: |
+          test -f Cargo.lock || cargo generate-lockfile
           sha256sum Cargo.lock README.md > SHA256SUMS.txt
           cat SHA256SUMS.txt
 

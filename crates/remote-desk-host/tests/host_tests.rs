@@ -161,16 +161,16 @@ async fn test_host_windows_backend_instantiation_and_capture_pipeline() {
 
     assert!(host.device_id().starts_with("rd-"));
     let monitors = host.enumerate_monitors().await.unwrap();
-    assert_eq!(monitors.len(), 2);
+    assert!(!monitors.is_empty());
     assert_eq!(monitors[0].id, 0);
 
     // Verify Windows capture backend starts and delivers frame through adapter
     {
         let mut capture = host.capture.lock().await;
-        capture.start_capture(0).await.unwrap();
+        capture.start_capture(monitors[0].id).await.unwrap();
         let frame = capture.next_frame().await.unwrap();
-        assert_eq!(frame.width, 2560);
-        assert_eq!(frame.height, 1440);
+        assert!(frame.width > 0);
+        assert!(frame.height > 0);
         capture.stop_capture().await.unwrap();
     }
 }

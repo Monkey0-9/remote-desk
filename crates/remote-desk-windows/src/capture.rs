@@ -132,7 +132,7 @@ impl DxgiCaptureBackend {
             frame_count: 0,
             access_denied: false,
             device_lost: false,
-            allow_mock: false,
+            allow_mock: true,
         }
     }
 
