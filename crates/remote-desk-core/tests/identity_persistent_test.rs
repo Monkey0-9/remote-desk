@@ -188,4 +188,29 @@ fn test_handshake_transcript_signing_and_verification() {
     let session_keys = derive_session_keys(&shared_secret, &transcript.compute_transcript_hash());
     assert_ne!(session_keys.media_key, session_keys.input_key);
     assert_ne!(session_keys.media_key, [0u8; 32]);
+
+    // Test that length delimiters prevent transcript hash collision across variable-length fields
+    let t_a = HandshakeTranscript::new(
+        1,
+        host_id.public_key_bytes(),
+        client_id.public_key_bytes(),
+        [1u8; 32],
+        [2u8; 32],
+        "sess".to_string(),
+        vec!["screen".to_string()],
+    );
+    let t_b = HandshakeTranscript::new(
+        1,
+        host_id.public_key_bytes(),
+        client_id.public_key_bytes(),
+        [1u8; 32],
+        [2u8; 32],
+        "ses".to_string(),
+        vec!["sscreen".to_string()],
+    );
+    assert_ne!(
+        t_a.compute_transcript_hash(),
+        t_b.compute_transcript_hash(),
+        "Different variable-length field segmentations must yield distinct hashes"
+    );
 }

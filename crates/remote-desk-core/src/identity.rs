@@ -185,7 +185,12 @@ impl DeviceIdentity {
 
     /// Derive device ID from public key
     pub fn derive_device_id(vk: &VerifyingKey) -> String {
-        let hash = Sha256::digest(vk.as_bytes());
+        Self::derive_device_id_from_bytes(vk.as_bytes())
+    }
+
+    /// Derive stable 9-digit human-friendly Device ID locator from raw 32-byte public key
+    pub fn derive_device_id_from_bytes(public_key: &[u8; 32]) -> String {
+        let hash = Sha256::digest(public_key);
         let part1 = u16::from_be_bytes([hash[0], hash[1]]) % 10000;
         let part2 = u16::from_be_bytes([hash[2], hash[3]]) % 10000;
         format!("rd-{:04}-{:04}", part1, part2)

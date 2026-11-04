@@ -54,7 +54,7 @@ pub enum ServerSignalResponse {
 pub struct SignalingServer {
     listener: TcpListener,
     broker: RendezvousBroker,
-    active_peers: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Message>>>>,
+    active_peers: Arc<Mutex<HashMap<String, mpsc::Sender<Message>>>>,
     bind_addr: String,
 }
 
@@ -122,7 +122,7 @@ impl SignalingServer {
         // Notify and close active connections
         let mut peers = active_peers.lock().unwrap();
         for (peer_id, tx) in peers.drain() {
-            let _ = tx.send(Message::Close(None));
+            let _ = tx.try_send(Message::Close(None));
             debug!("Sent close frame to peer {}", peer_id);
         }
 
@@ -133,7 +133,7 @@ impl SignalingServer {
         mut stream: TcpStream,
         _peer_addr: SocketAddr,
         broker: RendezvousBroker,
-        active_peers: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Message>>>>,
+        active_peers: Arc<Mutex<HashMap<String, mpsc::Sender<Message>>>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Peek initial bytes to distinguish HTTP health probe from WebSocket handshake
         let mut peek_buf = [0u8; 1024];
@@ -212,7 +212,7 @@ impl SignalingServer {
         let ws_stream = tokio_tungstenite::accept_async(stream).await?;
         let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-        let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
         let mut registered_device_id: Option<String> = None;
 
         // Task to write outbound WebSocket messages to client
@@ -237,7 +237,9 @@ impl SignalingServer {
                         let err_resp = ServerSignalResponse::Error {
                             message: "Message exceeds 128KB maximum limit".to_string(),
                         };
-                        let _ = outbound_tx.send(Message::Text(serde_json::to_string(&err_resp)?));
+                        let _ = outbound_tx
+                            .send(Message::Text(serde_json::to_string(&err_resp)?))
+                            .await;
                         continue;
                     }
 
@@ -248,55 +250,93 @@ impl SignalingServer {
                             public_key_hex,
                             signature_hex,
                         }) => {
-                            // 1. Clock skew check: max 5 minutes (300,000 ms) drift
+                            // 1. Mandatory Ed25519 signature proof-of-possession
+                            let sig_str = match signature_hex.as_deref() {
+                                Some(s) if !s.trim().is_empty() => s.trim(),
+                                _ => {
+                                    let err_resp = ServerSignalResponse::Error {
+                                        message: "Registration rejected: missing mandatory Ed25519 signature proof-of-possession".to_string(),
+                                    };
+                                    let _ = outbound_tx
+                                        .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                        .await;
+                                    continue;
+                                }
+                            };
+
+                            // 2. Freshness check: max 30 seconds (30,000 ms) clock skew
                             let now_ms = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_millis() as u64;
-                            if timestamp_ms > 0 && now_ms.abs_diff(timestamp_ms) > 300_000 {
+                            if timestamp_ms == 0 || now_ms.abs_diff(timestamp_ms) > 30_000 {
                                 let err_resp = ServerSignalResponse::Error {
                                     message: format!(
-                                        "Registration rejected: timestamp drift too large ({}ms vs server {}ms)",
-                                        timestamp_ms, now_ms
+                                        "Registration rejected: timestamp delta {}ms exceeds 30000ms freshness window",
+                                        now_ms.abs_diff(timestamp_ms)
                                     ),
                                 };
                                 let _ = outbound_tx
-                                    .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                    .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                    .await;
                                 continue;
                             }
 
-                            // 2. Cryptographic Proof-of-Possession check
-                            if let Some(ref sig_str) = signature_hex {
-                                let challenge = format!(
-                                    "RemoteDesk-Signaling-Register:{}:{}",
-                                    timestamp_ms, device_id
-                                );
-                                let pubkey_bytes = decode_hex_exact::<32>(&public_key_hex);
-                                let sig_bytes = decode_hex_exact::<64>(sig_str);
+                            // 3. Decode public key and signature
+                            let pubkey_bytes = decode_hex_exact::<32>(&public_key_hex);
+                            let sig_bytes = decode_hex_exact::<64>(sig_str);
 
-                                let verified = match (pubkey_bytes, sig_bytes) {
-                                    (Some(pk), Some(sig)) => {
-                                        if let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&pk)
-                                        {
-                                            let dalek_sig =
-                                                ed25519_dalek::Signature::from_bytes(&sig);
-                                            use ed25519_dalek::Verifier;
-                                            vk.verify(challenge.as_bytes(), &dalek_sig).is_ok()
-                                        } else {
-                                            false
-                                        }
-                                    }
-                                    _ => false,
-                                };
-
-                                if !verified {
+                            let (pk, sig) = match (pubkey_bytes, sig_bytes) {
+                                (Some(pk), Some(sig)) => (pk, sig),
+                                _ => {
                                     let err_resp = ServerSignalResponse::Error {
-                                        message: "Registration rejected: invalid cryptographic signature proof-of-possession".to_string(),
+                                        message: "Registration rejected: invalid public key or signature hex encoding".to_string(),
                                     };
                                     let _ = outbound_tx
-                                        .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                        .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                        .await;
                                     continue;
                                 }
+                            };
+
+                            // 4. Validate device_id binds to public key
+                            let derived_id = remote_desk_core::identity::DeviceIdentity::derive_device_id_from_bytes(&pk);
+                            if device_id != derived_id {
+                                let err_resp = ServerSignalResponse::Error {
+                                    message: format!(
+                                        "Registration rejected: claimed device_id '{}' does not match public key derived ID '{}'",
+                                        device_id, derived_id
+                                    ),
+                                };
+                                let _ = outbound_tx
+                                    .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                    .await;
+                                continue;
+                            }
+
+                            // 5. Cryptographic Proof-of-Possession check
+                            let challenge = format!(
+                                "RemoteDesk-Signaling-Register:{}:{}",
+                                timestamp_ms, device_id
+                            );
+
+                            let verified =
+                                if let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&pk) {
+                                    let dalek_sig = ed25519_dalek::Signature::from_bytes(&sig);
+                                    use ed25519_dalek::Verifier;
+                                    vk.verify(challenge.as_bytes(), &dalek_sig).is_ok()
+                                } else {
+                                    false
+                                };
+
+                            if !verified {
+                                let err_resp = ServerSignalResponse::Error {
+                                    message: "Registration rejected: invalid cryptographic signature proof-of-possession".to_string(),
+                                };
+                                let _ = outbound_tx
+                                    .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                    .await;
+                                continue;
                             }
 
                             if let Err(e) = broker.register_peer(&device_id) {
@@ -304,7 +344,8 @@ impl SignalingServer {
                                     message: format!("Registration failed: {:?}", e),
                                 };
                                 let _ = outbound_tx
-                                    .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                    .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                    .await;
                                 continue;
                             }
 
@@ -316,7 +357,9 @@ impl SignalingServer {
 
                             info!("Peer registered on WebSocket signaling: {}", device_id);
                             let resp = ServerSignalResponse::Registered { device_id };
-                            let _ = outbound_tx.send(Message::Text(serde_json::to_string(&resp)?));
+                            let _ = outbound_tx
+                                .send(Message::Text(serde_json::to_string(&resp)?))
+                                .await;
                         }
                         Ok(ClientSignalRequest::Route {
                             target_id,
@@ -329,12 +372,43 @@ impl SignalingServer {
                                         message: "Unauthenticated: Must register device before routing messages".to_string(),
                                     };
                                     let _ = outbound_tx
-                                        .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                        .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                        .await;
                                     continue;
                                 }
                             };
 
-                            // If target peer is currently connected live, forward immediately
+                            // Check rate limit on sender
+                            if !broker.check_rate_limit(sender_id) {
+                                let err_resp = ServerSignalResponse::Error {
+                                    message: "Route failed: RateLimitExceeded".to_string(),
+                                };
+                                let _ = outbound_tx
+                                    .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                    .await;
+                                continue;
+                            }
+
+                            // Verify claimed sender identity in envelope
+                            if let Ok(val) =
+                                serde_json::from_str::<serde_json::Value>(&envelope_json)
+                            {
+                                if let Some(claimed_sender) =
+                                    val.get("sender_device_id").and_then(|s| s.as_str())
+                                {
+                                    if claimed_sender != sender_id {
+                                        let err_resp = ServerSignalResponse::Error {
+                                            message: "Route rejected: envelope sender does not match authenticated peer ID".to_string(),
+                                        };
+                                        let _ = outbound_tx
+                                            .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                            .await;
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // If target peer is currently connected live, forward immediately via bounded channel
                             let forwarded = {
                                 let peers = active_peers.lock().unwrap();
                                 if let Some(target_tx) = peers.get(&target_id) {
@@ -342,7 +416,7 @@ impl SignalingServer {
                                         message: envelope_json.clone(),
                                     };
                                     if let Ok(json_str) = serde_json::to_string(&incoming) {
-                                        target_tx.send(Message::Text(json_str)).is_ok()
+                                        target_tx.try_send(Message::Text(json_str)).is_ok()
                                     } else {
                                         false
                                     }
@@ -362,13 +436,16 @@ impl SignalingServer {
                                         message: format!("Route failed: {:?}", e),
                                     };
                                     let _ = outbound_tx
-                                        .send(Message::Text(serde_json::to_string(&err_resp)?));
+                                        .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                        .await;
                                     continue;
                                 }
                             }
 
                             let resp = ServerSignalResponse::Routed { target_id };
-                            let _ = outbound_tx.send(Message::Text(serde_json::to_string(&resp)?));
+                            let _ = outbound_tx
+                                .send(Message::Text(serde_json::to_string(&resp)?))
+                                .await;
                         }
                         Ok(ClientSignalRequest::Poll) => {
                             if let Some(ref device_id) = registered_device_id {
@@ -378,7 +455,8 @@ impl SignalingServer {
                                         let incoming =
                                             ServerSignalResponse::Incoming { message: msg_str };
                                         let _ = outbound_tx
-                                            .send(Message::Text(serde_json::to_string(&incoming)?));
+                                            .send(Message::Text(serde_json::to_string(&incoming)?))
+                                            .await;
                                     }
                                 }
                             }
@@ -391,19 +469,22 @@ impl SignalingServer {
                             let resp = ServerSignalResponse::Pong {
                                 timestamp_ms: now_ms,
                             };
-                            let _ = outbound_tx.send(Message::Text(serde_json::to_string(&resp)?));
+                            let _ = outbound_tx
+                                .send(Message::Text(serde_json::to_string(&resp)?))
+                                .await;
                         }
                         Err(e) => {
                             let err_resp = ServerSignalResponse::Error {
                                 message: format!("Invalid JSON request payload: {}", e),
                             };
-                            let _ =
-                                outbound_tx.send(Message::Text(serde_json::to_string(&err_resp)?));
+                            let _ = outbound_tx
+                                .send(Message::Text(serde_json::to_string(&err_resp)?))
+                                .await;
                         }
                     }
                 }
                 Message::Ping(data) => {
-                    let _ = outbound_tx.send(Message::Pong(data));
+                    let _ = outbound_tx.send(Message::Pong(data)).await;
                 }
                 Message::Close(_) => break,
                 _ => {}

@@ -24,7 +24,7 @@ pub struct RemoteDesktopPortalInjector {
 
 impl RemoteDesktopPortalInjector {
     pub fn new(monitor_width: u32, monitor_height: u32) -> Self {
-        Self::with_mock_policy(monitor_width, monitor_height, true)
+        Self::with_mock_policy(monitor_width, monitor_height, false)
     }
 
     pub fn with_mock_policy(monitor_width: u32, monitor_height: u32, allow_mock: bool) -> Self {

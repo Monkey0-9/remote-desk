@@ -99,6 +99,15 @@ impl RendezvousBroker {
         limiters.remove(device_id);
     }
 
+    /// Check and consume rate limit token for sender
+    pub fn check_rate_limit(&self, sender_id: &str) -> bool {
+        let mut limiters = self.rate_limiters.lock().unwrap();
+        let bucket = limiters
+            .entry(sender_id.to_string())
+            .or_insert_with(|| TokenBucket::new(5, 5.0));
+        bucket.try_acquire()
+    }
+
     pub fn route_message(
         &self,
         sender_id: &str,
@@ -106,15 +115,8 @@ impl RendezvousBroker {
         payload: Vec<u8>,
     ) -> Result<(), SignalServerError> {
         // Enforce token-bucket rate limit (5 requests per second max)
-        {
-            let mut limiters = self.rate_limiters.lock().unwrap();
-            let bucket = limiters
-                .entry(sender_id.to_string())
-                .or_insert_with(|| TokenBucket::new(5, 5.0));
-
-            if !bucket.try_acquire() {
-                return Err(SignalServerError::RateLimitExceeded);
-            }
+        if !self.check_rate_limit(sender_id) {
+            return Err(SignalServerError::RateLimitExceeded);
         }
 
         // Route payload to target mailbox

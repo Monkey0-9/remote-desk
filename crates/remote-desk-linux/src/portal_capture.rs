@@ -41,7 +41,7 @@ impl WaylandPortalCaptureBackend {
                 refresh_rate: 60,
                 is_primary: true,
             }],
-            allow_mock: true,
+            allow_mock: false,
         }
     }
 

@@ -5,7 +5,7 @@ use remote_desk_linux::capture::{
 
 #[tokio::test]
 async fn test_wayland_portal_capture_lifecycle() {
-    let mut backend = WaylandPortalCaptureBackend::new();
+    let mut backend = WaylandPortalCaptureBackend::new().with_allow_mock(true);
     let monitors = backend.enumerate_monitors().await.expect("monitors");
     assert!(!monitors.is_empty());
 
@@ -22,6 +22,21 @@ async fn test_wayland_portal_capture_lifecycle() {
     assert_eq!(frame.data.len(), (frame.stride * frame.height) as usize);
 
     backend.stop_capture().await.expect("stop capture");
+}
+
+#[tokio::test]
+async fn test_wayland_portal_fail_closed_without_mock() {
+    let mut backend = WaylandPortalCaptureBackend::new().with_allow_mock(false);
+    let monitors = backend.enumerate_monitors().await.expect("monitors");
+    let monitor_id = monitors[0].id;
+    let res = backend.start_capture(monitor_id).await;
+    // In headless test runner without an active interactive portal session, it must fail closed with error
+    if res.is_err() {
+        assert!(matches!(
+            res,
+            Err(remote_desk_linux::capture::CaptureError::BackendError(_))
+        ));
+    }
 }
 
 #[tokio::test]

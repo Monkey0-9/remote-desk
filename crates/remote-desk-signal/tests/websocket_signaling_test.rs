@@ -47,13 +47,40 @@ async fn test_websocket_registration_and_realtime_routing() {
 
     let ws_url = format!("ws://{}/", addr);
 
+    use remote_desk_core::identity::DeviceIdentity;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let id_a = DeviceIdentity::generate();
+    let id_b = DeviceIdentity::generate();
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    // Helper for hex encoding
+    let to_hex = |bytes: &[u8]| -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            use std::fmt::Write;
+            write!(&mut s, "{:02x}", b).unwrap();
+        }
+        s
+    };
+
     // 1. Connect Client A (Host)
     let (mut client_a, _) = connect_async(&ws_url).await.unwrap();
+    let challenge_a = format!(
+        "RemoteDesk-Signaling-Register:{}:{}",
+        now_ms,
+        id_a.device_id()
+    );
+    let sig_a = id_a.sign(challenge_a.as_bytes());
     let reg_a = ClientSignalRequest::Register {
-        device_id: "rd-1111-2222".to_string(),
-        timestamp_ms: 0,
-        public_key_hex: "abcd".to_string(),
-        signature_hex: None,
+        device_id: id_a.device_id(),
+        timestamp_ms: now_ms,
+        public_key_hex: id_a.public_key_hex(),
+        signature_hex: Some(to_hex(&sig_a)),
     };
     client_a
         .send(Message::Text(serde_json::to_string(&reg_a).unwrap()))
@@ -67,11 +94,17 @@ async fn test_websocket_registration_and_realtime_routing() {
 
     // 2. Connect Client B (Controller)
     let (mut client_b, _) = connect_async(&ws_url).await.unwrap();
+    let challenge_b = format!(
+        "RemoteDesk-Signaling-Register:{}:{}",
+        now_ms,
+        id_b.device_id()
+    );
+    let sig_b = id_b.sign(challenge_b.as_bytes());
     let reg_b = ClientSignalRequest::Register {
-        device_id: "rd-3333-4444".to_string(),
-        timestamp_ms: 0,
-        public_key_hex: "1234".to_string(),
-        signature_hex: None,
+        device_id: id_b.device_id(),
+        timestamp_ms: now_ms,
+        public_key_hex: id_b.public_key_hex(),
+        signature_hex: Some(to_hex(&sig_b)),
     };
     client_b
         .send(Message::Text(serde_json::to_string(&reg_b).unwrap()))
@@ -86,8 +119,11 @@ async fn test_websocket_registration_and_realtime_routing() {
 
     // 3. Client B sends signaling message to Client A
     let route_req = ClientSignalRequest::Route {
-        target_id: "rd-1111-2222".to_string(),
-        envelope_json: r#"{"type":"SdpOffer","sdp":"v=0..."}"#.to_string(),
+        target_id: id_a.device_id(),
+        envelope_json: format!(
+            r#"{{"sender_device_id":"{}","type":"SdpOffer","sdp":"v=0..."}}"#,
+            id_b.device_id()
+        ),
     };
     client_b
         .send(Message::Text(serde_json::to_string(&route_req).unwrap()))
@@ -146,6 +182,57 @@ async fn test_websocket_registration_proof_of_possession_and_security() {
     let resp: ServerSignalResponse = serde_json::from_str(err_msg.to_text().unwrap()).unwrap();
     assert!(
         matches!(resp, ServerSignalResponse::Error { message } if message.contains("Unauthenticated"))
+    );
+
+    // 1b. Registration without signature is rejected
+    let identity = DeviceIdentity::generate();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let nosig_reg = ClientSignalRequest::Register {
+        device_id: identity.device_id(),
+        timestamp_ms: now_ms,
+        public_key_hex: identity.public_key_hex(),
+        signature_hex: None,
+    };
+    client
+        .send(Message::Text(serde_json::to_string(&nosig_reg).unwrap()))
+        .await
+        .unwrap();
+
+    let err_msg_nosig = client.next().await.unwrap().unwrap();
+    let resp_nosig: ServerSignalResponse =
+        serde_json::from_str(err_msg_nosig.to_text().unwrap()).unwrap();
+    assert!(
+        matches!(resp_nosig, ServerSignalResponse::Error { message } if message.contains("missing mandatory Ed25519 signature"))
+    );
+
+    // 1c. Registration with mismatched device_id is rejected
+    let challenge_mismatch = format!("RemoteDesk-Signaling-Register:{}:rd-9999-9999", now_ms);
+    let sig_mismatch = identity.sign(challenge_mismatch.as_bytes());
+    let mut sig_mismatch_hex = String::with_capacity(128);
+    for b in sig_mismatch {
+        use std::fmt::Write;
+        write!(&mut sig_mismatch_hex, "{:02x}", b).unwrap();
+    }
+    let mismatch_reg = ClientSignalRequest::Register {
+        device_id: "rd-9999-9999".to_string(), // Mismatched ID
+        timestamp_ms: now_ms,
+        public_key_hex: identity.public_key_hex(),
+        signature_hex: Some(sig_mismatch_hex),
+    };
+    client
+        .send(Message::Text(serde_json::to_string(&mismatch_reg).unwrap()))
+        .await
+        .unwrap();
+
+    let err_msg_mismatch = client.next().await.unwrap().unwrap();
+    let resp_mismatch: ServerSignalResponse =
+        serde_json::from_str(err_msg_mismatch.to_text().unwrap()).unwrap();
+    assert!(
+        matches!(resp_mismatch, ServerSignalResponse::Error { message } if message.contains("does not match public key derived ID"))
     );
 
     // 2. Client with forged signature is rejected

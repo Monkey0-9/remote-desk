@@ -83,26 +83,43 @@ class LanSessionClient(
                 csprng.nextBytes(ephKeyBytes)
                 val ephKeyHex = ephKeyBytes.joinToString("") { "%02x".format(it) }
 
-                val pubKeyBytes = keyStore?.getLocalDeviceSeed() ?: ByteArray(32).apply { csprng.nextBytes(this) }
+                val nowMs = System.currentTimeMillis()
+                val pubKeyBytes = keyStore?.getLocalPublicKey() ?: ByteArray(32).apply { csprng.nextBytes(this) }
                 val pubKeyHex = pubKeyBytes.joinToString("") { "%02x".format(it) }
+
+                val challenge = "RemoteDesk-LAN-Auth:$deviceId:$ephKeyHex:$nowMs"
+                val sigBytes = keyStore?.signChallenge(challenge.toByteArray(Charsets.UTF_8))
+                    ?: ByteArray(64).apply { csprng.nextBytes(this) }
+                val sigHex = sigBytes.joinToString("") { "%02x".format(it) }
 
                 val handshakeObj = JSONObject().apply {
                     put("peer_id", deviceId)
                     put("peer_pubkey_hex", pubKeyHex)
                     put("peer_ephemeral_pubkey_hex", ephKeyHex)
+                    put("signature_hex", sigHex)
+                    put("timestamp_ms", nowMs)
                 }
 
-                val handshakeBytes = handshakeObj.toString().toByteArray(Charsets.UTF_8)
+                val handshakeBytes = (handshakeObj.toString() + "\n").toByteArray(Charsets.UTF_8)
                 out.write(handshakeBytes)
                 out.flush()
 
                 // 2. Read Handshake Response JSON
-                val respLine = readLine(input)
+                var respLine = readLine(input)
                 Log.i(TAG, "Received handshake response: $respLine")
 
-                val respObj = JSONObject(respLine)
-                if (respObj.optString("status") == "approved") {
+                var respObj = JSONObject(respLine)
+                if (respObj.optString("status") == "pending_approval") {
                     val sas = respObj.optString("sas_code", "000-000")
+                    _sasCode.value = sas
+                    Log.i(TAG, "Attended approval pending. Compare SAS: $sas")
+                    // Wait for final approval from host
+                    respLine = readLine(input)
+                    respObj = JSONObject(respLine)
+                }
+
+                if (respObj.optString("status") == "approved") {
+                    val sas = respObj.optString("sas_code", _sasCode.value)
                     _sasCode.value = sas
                     _connectionState.value = ConnectionState.ACTIVE
                     Log.i(TAG, "Session authenticated and active! SAS: $sas")

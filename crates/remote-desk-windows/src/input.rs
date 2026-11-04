@@ -71,13 +71,11 @@ impl SendInputInjector {
         );
         if res == 0 {
             let err = windows_sys::Win32::Foundation::GetLastError();
-            // In headless CI runner or background service sessions without an interactive desktop,
-            // SendInput returns 0. Log a warning rather than panicking headless test runners.
-            tracing::warn!(
-                "SendInput returned 0 (Win32 error: {}), headless/service session fallback",
+            tracing::warn!("SendInput returned 0 (Win32 error: {})", err);
+            Err(WindowsInputError::InjectionFailed(format!(
+                "SendInput failed with Win32 error code: {}",
                 err
-            );
-            Ok(())
+            )))
         } else {
             Ok(())
         }
@@ -232,6 +230,8 @@ impl WindowsInputInjectorBackend for SendInputInjector {
     }
 
     async fn release_all(&mut self) -> Result<(), WindowsInputError> {
+        #[allow(unused_mut)]
+        let mut first_err = None;
         let buttons: Vec<MouseButtonCode> = self.held_buttons.drain().collect();
         for _btn in buttons {
             #[cfg(target_os = "windows")]
@@ -252,7 +252,11 @@ impl WindowsInputInjectorBackend for SendInputInjector {
                         MOUSEEVENTF_XUP
                     }
                 };
-                let _ = Self::send_win32_input(input);
+                if let Err(e) = Self::send_win32_input(input) {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
             }
             self.injected_count += 1;
         }
@@ -266,9 +270,17 @@ impl WindowsInputInjectorBackend for SendInputInjector {
                 input.r#type = INPUT_KEYBOARD;
                 input.Anonymous.ki.wScan = (_scancode & 0xFFFF) as u16;
                 input.Anonymous.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                let _ = Self::send_win32_input(input);
+                if let Err(e) = Self::send_win32_input(input) {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
             }
             self.injected_count += 1;
+        }
+
+        if let Some(e) = first_err {
+            return Err(e);
         }
 
         debug!("Released all held keys and buttons via Windows SendInput fail-safe");

@@ -78,29 +78,41 @@ impl UinputInjector {
 
         let fd = file.as_raw_fd();
         unsafe {
+            let check_ioctl = |req: libc::c_ulong, arg: libc::c_int| -> Result<(), InputError> {
+                let ret = libc::ioctl(fd, req, arg);
+                if ret < 0 {
+                    return Err(InputError::InjectionFailed(format!(
+                        "uinput ioctl request {:#x} failed: {}",
+                        req,
+                        std::io::Error::last_os_error()
+                    )));
+                }
+                Ok(())
+            };
+
             // Configure event types
-            libc::ioctl(fd, UI_SET_EVBIT, EV_KEY);
-            libc::ioctl(fd, UI_SET_EVBIT, EV_REL);
-            libc::ioctl(fd, UI_SET_EVBIT, EV_ABS);
-            libc::ioctl(fd, UI_SET_EVBIT, EV_SYN);
+            check_ioctl(UI_SET_EVBIT, EV_KEY)?;
+            check_ioctl(UI_SET_EVBIT, EV_REL)?;
+            check_ioctl(UI_SET_EVBIT, EV_ABS)?;
+            check_ioctl(UI_SET_EVBIT, EV_SYN)?;
 
             // Enable mouse buttons
             for btn in [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA] {
-                libc::ioctl(fd, UI_SET_KEYBIT, btn);
+                check_ioctl(UI_SET_KEYBIT, btn)?;
             }
             // Enable keyboard keys (1..255)
             for k in 1..256 {
-                libc::ioctl(fd, UI_SET_KEYBIT, k as libc::c_int);
+                check_ioctl(UI_SET_KEYBIT, k as libc::c_int)?;
             }
 
             // Enable relative pointer and wheel axes
             for rel in [REL_X, REL_Y, REL_WHEEL, REL_HWHEEL] {
-                libc::ioctl(fd, UI_SET_RELBIT, rel);
+                check_ioctl(UI_SET_RELBIT, rel)?;
             }
 
             // Enable absolute pointer axes
-            libc::ioctl(fd, UI_SET_ABSBIT, ABS_X as libc::c_int);
-            libc::ioctl(fd, UI_SET_ABSBIT, ABS_Y as libc::c_int);
+            check_ioctl(UI_SET_ABSBIT, ABS_X as libc::c_int)?;
+            check_ioctl(UI_SET_ABSBIT, ABS_Y as libc::c_int)?;
 
             // Write user dev setup
             let mut udev: UinputUserDev = std::mem::zeroed();
@@ -115,22 +127,21 @@ impl UinputInjector {
             udev.absmax[ABS_X] = monitor_width as i32;
             udev.absmax[ABS_Y] = monitor_height as i32;
 
-            let written = libc::write(
-                fd,
-                &udev as *const _ as *const libc::c_void,
-                std::mem::size_of::<UinputUserDev>(),
-            );
-            if written < 0 {
-                return Err(InputError::InjectionFailed(
-                    "Failed to write uinput_user_dev structure".to_string(),
-                ));
+            let expected_len = std::mem::size_of::<UinputUserDev>();
+            let written = libc::write(fd, &udev as *const _ as *const libc::c_void, expected_len);
+            if written != expected_len as isize {
+                return Err(InputError::InjectionFailed(format!(
+                    "Failed to write complete uinput_user_dev structure (written {} of {} bytes)",
+                    written, expected_len
+                )));
             }
 
             let create_res = libc::ioctl(fd, UI_DEV_CREATE);
             if create_res < 0 {
-                return Err(InputError::InjectionFailed(
-                    "UI_DEV_CREATE ioctl failed".to_string(),
-                ));
+                return Err(InputError::InjectionFailed(format!(
+                    "UI_DEV_CREATE ioctl failed: {}",
+                    std::io::Error::last_os_error()
+                )));
             }
         }
 
@@ -241,6 +252,7 @@ impl InputInjectorBackend for UinputInjector {
     }
 
     async fn release_all(&mut self) -> Result<(), InputError> {
+        let mut first_err = None;
         let buttons: Vec<MouseButtonCode> = self.held_buttons.drain().collect();
         for btn in buttons {
             let code = match btn {
@@ -250,15 +262,32 @@ impl InputInjectorBackend for UinputInjector {
                 MouseButtonCode::Back => 0x115,
                 MouseButtonCode::Forward => 0x116,
             };
-            let _ = self.write_event(1, code, 0);
+            if let Err(e) = self.write_event(1, code, 0) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
         }
 
         let keys: Vec<u32> = self.held_keys.drain().collect();
         for scancode in keys {
-            let _ = self.write_event(1, (scancode & 0xFFFF) as u16, 0);
+            if let Err(e) = self.write_event(1, (scancode & 0xFFFF) as u16, 0) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
         }
 
-        let _ = self.sync();
+        if let Err(e) = self.sync() {
+            if first_err.is_none() {
+                first_err = Some(e);
+            }
+        }
+
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+
         debug!("Released all held keys and buttons via uinput fail-safe");
         Ok(())
     }

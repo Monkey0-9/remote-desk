@@ -45,11 +45,23 @@ class SecureKeyStore(private val storageFile: File? = null) {
             } else {
                 (keyStore.getEntry(MASTER_KEY_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
             }
-        } catch (_: Exception) {
-            // Fallback for standard JVM / test runner without AndroidKeyStore provider
-            val fallbackSeed = "RemoteDesk-Master-Key-Seed-v1-Production".toByteArray(Charsets.UTF_8)
-            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(fallbackSeed)
-            SecretKeySpec(digest, "AES")
+        } catch (e: Exception) {
+            // Strictly fail-closed on Android: hardware-backed AndroidKeyStore is mandatory
+            val isAndroid = try {
+                Class.forName("android.os.Build") != null && android.os.Build.VERSION.SDK_INT > 0
+            } catch (_: Throwable) {
+                false
+            }
+            if (isAndroid) {
+                throw SecurityException(
+                    "AndroidKeyStore initialization failed. Hardware-backed key is mandatory in production.",
+                    e
+                )
+            }
+            // For offline JVM unit test harness only: derive ephemeral key bounded to local test execution
+            val testSeed = java.security.MessageDigest.getInstance("SHA-256")
+                .digest("RemoteDesk-Local-Test-Harness-Ephemeral-Key".toByteArray(Charsets.UTF_8))
+            SecretKeySpec(testSeed, "AES")
         }
     }
 
@@ -157,11 +169,38 @@ class SecureKeyStore(private val storageFile: File? = null) {
         return localDeviceSeed?.clone() ?: ByteArray(32)
     }
 
-    fun getDeviceId(): String {
+    /**
+     * Obtains the 32-byte public key derived from local private seed
+     */
+    fun getLocalPublicKey(): ByteArray {
         val seed = getLocalDeviceSeed()
-        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(seed)
-        val shortHex = hash.take(4).joinToString("") { "%02x".format(it) }
-        return "rd-android-$shortHex"
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(seed)
+        return digest
+    }
+
+    /**
+     * Derives stable 9-digit human-friendly Device ID locator (e.g. "rd-4928-1029")
+     * derived identically to Rust from the SHA-256 hash of the public key.
+     */
+    fun getDeviceId(): String {
+        val pubKey = getLocalPublicKey()
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(pubKey)
+        val part1 = (((hash[0].toInt() and 0xFF) shl 8) or (hash[1].toInt() and 0xFF)) % 10000
+        val part2 = (((hash[2].toInt() and 0xFF) shl 8) or (hash[3].toInt() and 0xFF)) % 10000
+        return "rd-%04d-%04d".format(part1, part2)
+    }
+
+    /**
+     * Signs challenge payload using local device secret key
+     */
+    fun signChallenge(challenge: ByteArray): ByteArray {
+        val seed = getLocalDeviceSeed()
+        val hmac = javax.crypto.Mac.getInstance("HmacSHA512")
+        hmac.init(SecretKeySpec(seed, "HmacSHA512"))
+        val sig = hmac.doFinal(challenge)
+        val out = ByteArray(64)
+        System.arraycopy(sig, 0, out, 0, 64)
+        return out
     }
 
     fun rotateLocalDeviceSeed(): ByteArray {

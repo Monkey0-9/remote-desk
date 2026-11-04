@@ -128,7 +128,7 @@ impl HandshakeTranscript {
         }
     }
 
-    /// Compute SHA-256 hash over the entire canonical transcript
+    /// Compute SHA-256 hash over the canonical length-delimited transcript
     pub fn compute_transcript_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update([self.protocol_version]);
@@ -136,8 +136,13 @@ impl HandshakeTranscript {
         hasher.update(self.controller_identity);
         hasher.update(self.host_ephemeral);
         hasher.update(self.controller_ephemeral);
+        // Explicit length prefix for variable-length session_id
+        hasher.update((self.session_id.len() as u32).to_be_bytes());
         hasher.update(self.session_id.as_bytes());
+        // Explicit length prefix for capabilities list and each capability entry
+        hasher.update((self.capabilities.len() as u32).to_be_bytes());
         for cap in &self.capabilities {
+            hasher.update((cap.len() as u32).to_be_bytes());
             hasher.update(cap.as_bytes());
         }
         let res = hasher.finalize();
