@@ -1,6 +1,6 @@
 # Full Production Implementation Plan: Linux, Windows, WebRTC, Signaling, Protocol & Android
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Transform Remote-Desk from architectural prototypes into fully genuine production implementations across Linux (Wayland/X11), Windows (DXGI/SendInput), WebRTC transport, WebSocket signaling server, cryptographic wire protocol, empirical microbenchmarks, and Android client.
 
@@ -47,14 +47,14 @@
 - Produces: `PairingHandshake::process_response_with_validation(...) -> Result<SessionKeys, PairingError>` with small-order point rejection and mutual Ed25519 transcript signing
 - Produces: `TouchGesturePayload`, `ClipboardDataPayload`, `QualityConfigPayload`
 
-- [ ] **Step 1: Write tests for identity disk persistence, 12 session states, and codec bounds validation**
-- [ ] **Step 2: Implement persistent identity storage with 0600 file permissions and 32-byte SHA-256 fingerprint in `identity.rs`**
-- [ ] **Step 3: Implement X25519 low-order point rejection and mutual Ed25519 transcript signing in `pairing.rs`**
-- [ ] **Step 4: Expand `session.rs` to full 12 lifecycle states and retain monitor ID on pause/resume**
-- [ ] **Step 5: Harden `codec.rs` with exact frame size bounds, sequence replay window, and NaN/Inf coordinate rejection**
-- [ ] **Step 6: Add `TouchGesturePayload`, `ClipboardDataPayload`, and `QualityConfigPayload` to `messages.rs`**
-- [ ] **Step 7: Run `cargo test -p remote-desk-core -p remote-desk-proto` and verify 100% pass**
-- [ ] **Step 8: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Write tests for identity disk persistence, 12 session states, and codec bounds validation**
+- [x] **Step 2: Implement persistent identity storage with 0600 file permissions and 32-byte SHA-256 fingerprint in `identity.rs`**
+- [x] **Step 3: Implement X25519 low-order point rejection and mutual Ed25519 transcript signing in `pairing.rs`**
+- [x] **Step 4: Expand `session.rs` to full 12 lifecycle states and retain monitor ID on pause/resume**
+- [x] **Step 5: Harden `codec.rs` with exact frame size bounds, sequence replay window, and NaN/Inf coordinate rejection**
+- [x] **Step 6: Add `TouchGesturePayload`, `ClipboardDataPayload`, and `QualityConfigPayload` to `messages.rs`**
+- [x] **Step 7: Run `cargo test -p remote-desk-core -p remote-desk-proto` and verify 100% pass**
+- [x] **Step 8: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -72,13 +72,13 @@
 - Produces: `WaylandPortalCaptureBackend`: creates DBus `org.freedesktop.portal.ScreenCast` session via `zbus`, requests screen stream, negotiates PipeWire stream node fd, imports DMA-BUF / MemFd frames
 - Produces: `create_linux_capture_backend(preference: BackendPreference) -> Box<dyn ScreenCaptureBackend>`
 
-- [ ] **Step 1: Add pure-Rust `x11rb = { version = "0.13", features = ["shm", "randr", "damage"] }` and `zbus = "4.4"` to `crates/remote-desk-linux/Cargo.toml`**
-- [ ] **Step 2: Write tests for X11 and Portal capture interfaces and monitor enumeration**
-- [ ] **Step 3: Implement `x11_capture.rs` using `x11rb` with MIT-SHM buffer mapping and XRandR output discovery**
-- [ ] **Step 4: Implement `portal_capture.rs` with DBus portal ScreenCast session creation, PipeWire fd negotiation, and DMA-BUF / MemFd fallback**
-- [ ] **Step 5: Integrate real backends into `create_linux_capture_backend()`, auto-detecting Wayland vs X11 environment with graceful fallback**
-- [ ] **Step 6: Run `cargo test -p remote-desk-linux` and verify pass**
-- [ ] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Add pure-Rust `x11rb = { version = "0.13", features = ["shm", "randr", "damage"] }` and `zbus = "4.4"` to `crates/remote-desk-linux/Cargo.toml`**
+- [x] **Step 2: Write tests for X11 and Portal capture interfaces and monitor enumeration**
+- [x] **Step 3: Implement `x11_capture.rs` using `x11rb` with MIT-SHM buffer mapping and XRandR output discovery**
+- [x] **Step 4: Implement `portal_capture.rs` with DBus portal ScreenCast session creation, PipeWire fd negotiation, and DMA-BUF / MemFd fallback**
+- [x] **Step 5: Integrate real backends into `create_linux_capture_backend()`, auto-detecting Wayland vs X11 environment with graceful fallback**
+- [x] **Step 6: Run `cargo test -p remote-desk-linux` and verify pass**
+- [x] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -96,13 +96,13 @@
 - Produces: `XTestInjector`: injects X11 synthetic pointer and key events via `x11rb` XTest extension
 - Produces: `create_linux_input_injector(...) -> Box<dyn InputInjectorBackend>`
 
-- [ ] **Step 1: Write tests for input event translation, coordinate mapping, and stuck key fail-safe release**
-- [ ] **Step 2: Implement `/dev/uinput` injector with evdev event structures and coordinate scaling**
-- [ ] **Step 3: Implement X11 XTest injector using `x11rb` with virtual keycode mapping**
-- [ ] **Step 4: Implement automatic stuck key fail-safe release on drop or disconnect**
-- [ ] **Step 5: Wire real injectors into `create_linux_input_injector()`, prioritizing `/dev/uinput` with fallback to XTest**
-- [ ] **Step 6: Run `cargo test -p remote-desk-linux` and verify pass**
-- [ ] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Write tests for input event translation, coordinate mapping, and stuck key fail-safe release**
+- [x] **Step 2: Implement `/dev/uinput` injector with evdev event structures and coordinate scaling**
+- [x] **Step 3: Implement X11 XTest injector using `x11rb` with virtual keycode mapping**
+- [x] **Step 4: Implement automatic stuck key fail-safe release on drop or disconnect**
+- [x] **Step 5: Wire real injectors into `create_linux_input_injector()`, prioritizing `/dev/uinput` with fallback to XTest**
+- [x] **Step 6: Run `cargo test -p remote-desk-linux` and verify pass**
+- [x] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -119,12 +119,12 @@
 - Produces: `SendInputInjector`: Windows `SendInput` API calls, absolute virtual desktop coordinate mapping (`MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`), scan codes, extended keys, DPI scaling
 - Compiles conditionally with `#[cfg(target_os = "windows")]` using `windows-sys` and comprehensive cross-platform simulation stubs when compiled on Linux
 
-- [ ] **Step 1: Add `windows-sys = { version = "0.59", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Direct3D11", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }` to `crates/remote-desk-windows/Cargo.toml` under `[target.'cfg(windows)'.dependencies]`**
-- [ ] **Step 2: Write tests verifying monitor enumeration, coordinate translation, and API bindings**
-- [ ] **Step 3: Implement real DXGI Output Duplication backend for Windows with ACCESS_LOST recovery**
-- [ ] **Step 4: Implement real `SendInput` injector with virtual desktop coordinate mapping and scan code support**
-- [ ] **Step 5: Verify clean compilation on Linux target (`cargo check -p remote-desk-windows`)**
-- [ ] **Step 6: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Add `windows-sys = { version = "0.59", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Direct3D11", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }` to `crates/remote-desk-windows/Cargo.toml` under `[target.'cfg(windows)'.dependencies]`**
+- [x] **Step 2: Write tests verifying monitor enumeration, coordinate translation, and API bindings**
+- [x] **Step 3: Implement real DXGI Output Duplication backend for Windows with ACCESS_LOST recovery**
+- [x] **Step 4: Implement real `SendInput` injector with virtual desktop coordinate mapping and scan code support**
+- [x] **Step 5: Verify clean compilation on Linux target (`cargo check -p remote-desk-windows`)**
+- [x] **Step 6: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -143,13 +143,13 @@
 - Produces: Async WebSocket handler processing client registration, Ed25519 envelope signature verification, mailbox message delivery, and HTTP `/health` probe
 - Produces: Bounded queues (max 64 messages per device) with TTL expiration (default 300s) and per-IP/device rate limiting
 
-- [ ] **Step 1: Add `tokio-tungstenite = "0.23"` and `futures-util = "0.3"` to `crates/remote-desk-signal/Cargo.toml`**
-- [ ] **Step 2: Write integration tests testing real WebSocket client connect, authentication, envelope routing, and `/health` probe**
-- [ ] **Step 3: Implement `server.rs` with WebSocket upgrade, envelope signature validation, and HTTP health check**
-- [ ] **Step 4: Add TTL expiration and bounded queues to `broker.rs` to prevent memory leaks**
-- [ ] **Step 5: Update `remote-desk-signal/src/main.rs` to start the real WebSocket server and handle graceful shutdown**
-- [ ] **Step 6: Run `cargo test -p remote-desk-signal` and verify pass**
-- [ ] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Add `tokio-tungstenite = "0.23"` and `futures-util = "0.3"` to `crates/remote-desk-signal/Cargo.toml`**
+- [x] **Step 2: Write integration tests testing real WebSocket client connect, authentication, envelope routing, and `/health` probe**
+- [x] **Step 3: Implement `server.rs` with WebSocket upgrade, envelope signature validation, and HTTP health check**
+- [x] **Step 4: Add TTL expiration and bounded queues to `broker.rs` to prevent memory leaks**
+- [x] **Step 5: Update `remote-desk-signal/src/main.rs` to start the real WebSocket server and handle graceful shutdown**
+- [x] **Step 6: Run `cargo test -p remote-desk-signal` and verify pass**
+- [x] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -168,13 +168,13 @@
 - Produces: SCTP Data Channels: `"remote-desk-control"` (reliable, ordered) and `"remote-desk-input"` (unreliable, unordered, maxPacketLifeTime = 100ms)
 - Produces: Input event coalescer reducing pointer move flood while preserving button and key state transitions
 
-- [ ] **Step 1: Add `webrtc = "0.11"` to `crates/remote-desk-net/Cargo.toml`**
-- [ ] **Step 2: Write tests for WebRTC session initialization, SDP exchange, and DataChannel messaging**
-- [ ] **Step 3: Implement `webrtc_session.rs` configuring PeerConnection, SCTP DataChannels, and ICE gathering**
-- [ ] **Step 4: Implement pointer event coalescer in `crates/remote-desk-net/src/coalescer.rs`**
-- [ ] **Step 5: Connect WebSocket signaling client in `signaling.rs` to exchange SDP and ICE candidates**
-- [ ] **Step 6: Run `cargo test -p remote-desk-net` and verify pass**
-- [ ] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Add `webrtc = "0.11"` to `crates/remote-desk-net/Cargo.toml`**
+- [x] **Step 2: Write tests for WebRTC session initialization, SDP exchange, and DataChannel messaging**
+- [x] **Step 3: Implement `webrtc_session.rs` configuring PeerConnection, SCTP DataChannels, and ICE gathering**
+- [x] **Step 4: Implement pointer event coalescer in `crates/remote-desk-net/src/coalescer.rs`**
+- [x] **Step 5: Connect WebSocket signaling client in `signaling.rs` to exchange SDP and ICE candidates**
+- [x] **Step 6: Run `cargo test -p remote-desk-net` and verify pass**
+- [x] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -190,13 +190,13 @@
 - Produces: `HostService::run(&mut self) -> Result<(), HostError>` connecting persistent identity, native capture backend, input injector, signaling client, and WebRTC streaming loop
 - Produces: Fail-safe shutdown releasing all pressed keys/buttons and terminating portal/DXGI sessions
 
-- [ ] **Step 1: Write integration tests for `HostService` startup, health check, session lifecycle, and graceful shutdown**
-- [ ] **Step 2: Update `service.rs` to load persistent device identity from `~/.config/remote-desk/identity.key`**
-- [ ] **Step 3: Wire real Linux/Windows capture and input backends into the host streaming pipeline**
-- [ ] **Step 4: Integrate WebRTC peer connection and WebSocket signaling into `HostService`**
-- [ ] **Step 5: Verify host daemon CLI arguments (`--health-check`, `--backend`, `--display`, `--bind`)**
-- [ ] **Step 6: Run `cargo test -p remote-desk-host` and verify pass**
-- [ ] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Write integration tests for `HostService` startup, health check, session lifecycle, and graceful shutdown**
+- [x] **Step 2: Update `service.rs` to load persistent device identity from `~/.config/remote-desk/identity.key`**
+- [x] **Step 3: Wire real Linux/Windows capture and input backends into the host streaming pipeline**
+- [x] **Step 4: Integrate WebRTC peer connection and WebSocket signaling into `HostService`**
+- [x] **Step 5: Verify host daemon CLI arguments (`--health-check`, `--backend`, `--display`, `--bind`)**
+- [x] **Step 6: Run `cargo test -p remote-desk-host` and verify pass**
+- [x] **Step 7: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -217,12 +217,12 @@
   4. Input event coalescing efficiency (reduction %)
   5. Memory allocation rate and buffer pool throughput
 
-- [ ] **Step 1: Replace hardcoded static constants in `lib.rs` and `main.rs` with real high-resolution timer loops (`std::time::Instant`)**
-- [ ] **Step 2: Implement benchmarks for Ed25519 sign/verify throughput and key exchange**
-- [ ] **Step 3: Implement benchmarks for frame serialization and packet bounds checking**
-- [ ] **Step 4: Implement benchmarks for display coordinate transformations and pointer coalescing**
-- [ ] **Step 5: Run `cargo run -p remote-desk-bench` and verify honest empirical results are reported**
-- [ ] **Step 6: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Replace hardcoded static constants in `lib.rs` and `main.rs` with real high-resolution timer loops (`std::time::Instant`)**
+- [x] **Step 2: Implement benchmarks for Ed25519 sign/verify throughput and key exchange**
+- [x] **Step 3: Implement benchmarks for frame serialization and packet bounds checking**
+- [x] **Step 4: Implement benchmarks for display coordinate transformations and pointer coalescing**
+- [x] **Step 5: Run `cargo run -p remote-desk-bench` and verify honest empirical results are reported**
+- [x] **Step 6: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -239,12 +239,12 @@
 - Produces: `LanDiscovery` broadcasting and listening on UDP port 4810 for local Remote-Desk hosts
 - Produces: `WebRtcClient` managing WebRTC PeerConnection on Android and rendering to SurfaceViewRenderer
 
-- [ ] **Step 1: Implement hardware-backed key generation and storage in `SecureKeyStore.kt`**
-- [ ] **Step 2: Implement UDP broadcast LAN discovery in `LanDiscovery.kt`**
-- [ ] **Step 3: Implement WebRTC client wrapper in `WebRtcClient.kt`**
-- [ ] **Step 4: Connect touch gesture translation in `MainActivity.kt` to WebRTC input data channel**
-- [ ] **Step 5: Verify Gradle configuration and syntax**
-- [ ] **Step 6: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
+- [x] **Step 1: Implement hardware-backed key generation and storage in `SecureKeyStore.kt`**
+- [x] **Step 2: Implement UDP broadcast LAN discovery in `LanDiscovery.kt`**
+- [x] **Step 3: Implement WebRTC client wrapper in `WebRtcClient.kt`**
+- [x] **Step 4: Connect touch gesture translation in `MainActivity.kt` to WebRTC input data channel**
+- [x] **Step 5: Verify Gradle configuration and syntax**
+- [x] **Step 6: Commit changes with author `Monkey0-9 <prakashpraveen046@gmail.com>`**
 
 ---
 
@@ -254,10 +254,10 @@
 - Modify: `README.md`
 - Verify: Entire workspace
 
-- [ ] **Step 1: Update `README.md` with honest architecture diagrams, genuine benchmark numbers from Task 8, and verified capabilities**
-- [ ] **Step 2: Run `cargo fmt --check`**
-- [ ] **Step 3: Run `cargo clippy --workspace --all-targets -- -D warnings`**
-- [ ] **Step 4: Run `cargo test --workspace --all-targets`**
-- [ ] **Step 5: Run `openspec validate --all`**
-- [ ] **Step 6: Verify `git log` author is strictly `Monkey0-9 <prakashpraveen046@gmail.com>` and no private files (`.gemini/`, `.serena/`, `.env*`) exist in git**
-- [ ] **Step 7: Push cleanly to `origin main`**
+- [x] **Step 1: Update `README.md` with honest architecture diagrams, genuine benchmark numbers from Task 8, and verified capabilities**
+- [x] **Step 2: Run `cargo fmt --check`**
+- [x] **Step 3: Run `cargo clippy --workspace --all-targets -- -D warnings`**
+- [x] **Step 4: Run `cargo test --workspace --all-targets`**
+- [x] **Step 5: Run `openspec validate --all`**
+- [x] **Step 6: Verify `git log` author is strictly `Monkey0-9 <prakashpraveen046@gmail.com>` and no private files (`.gemini/`, `.serena/`, `.env*`) exist in git**
+- [x] **Step 7: Push cleanly to `origin main`**
