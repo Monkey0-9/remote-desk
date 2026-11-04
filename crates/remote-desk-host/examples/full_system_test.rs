@@ -1,5 +1,5 @@
 use remote_desk_core::identity::DeviceIdentity;
-use remote_desk_core::{compute_sas_code, EphemeralKeyExchange};
+use remote_desk_core::{compute_sas_code, CipherRole, EphemeralKeyExchange, SessionCrypto};
 use remote_desk_host::{HostConfig, HostService};
 use remote_desk_proto::{
     pack_frame, KeyState, KeyboardKeyPayload, MouseButtonCode, MouseButtonPayload,
@@ -160,14 +160,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_exchange = EphemeralKeyExchange::new();
     println!("  -> Client Device ID: {}", client_identity.device_id());
 
+    // Register client as trusted device for unattended auto-approval
+    host_arc.trusted_devices.lock().await.trust_device(
+        client_identity.device_id(),
+        client_identity.public_key_hex(),
+        "FullSystemTest-Client".to_string(),
+        0,
+    );
+
+    let eph_hex = hex_encode(&client_exchange.public_key_bytes());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let challenge = format!(
+        "RemoteDesk-LAN-Auth:{}:{}:{}",
+        client_identity.device_id(),
+        eph_hex,
+        now_ms
+    );
+    let signature = client_identity.sign(challenge.as_bytes());
+    let sig_hex = hex_encode(&signature);
+
     let handshake_payload = serde_json::json!({
         "peer_id": client_identity.device_id(),
         "peer_pubkey_hex": client_identity.public_key_hex(),
-        "peer_ephemeral_pubkey_hex": hex_encode(&client_exchange.public_key_bytes()),
+        "peer_ephemeral_pubkey_hex": eph_hex,
+        "signature_hex": sig_hex,
+        "timestamp_ms": now_ms,
     });
 
     client_conn
-        .write_all(handshake_payload.to_string().as_bytes())
+        .write_all(format!("{}\n", handshake_payload).as_bytes())
         .await?;
 
     let mut hs_buf = vec![0u8; 2048];
@@ -183,6 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[allow(dead_code)]
         host_pubkey_hex: String,
         host_ephemeral_pubkey_hex: String,
+        transcript_hash_hex: String,
     }
 
     let hs_obj: ServerHandshake = serde_json::from_str(hs_resp_str.trim())?;
@@ -193,6 +218,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Verify SAS agreement independently
     let host_ephem_32 = decode_hex_32(&hs_obj.host_ephemeral_pubkey_hex)
         .expect("host ephemeral pubkey must be valid 64-hex chars");
+    let transcript_hash_32 = decode_hex_32(&hs_obj.transcript_hash_hex)
+        .expect("transcript hash must be valid 64-hex chars");
 
     let client_shared_secret = client_exchange
         .compute_shared_secret(&host_ephem_32)
@@ -210,6 +237,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  -> SAS Verification: AUTHENTIC (Zero MitM Detected)!");
 
+    let client_crypto = SessionCrypto::new(
+        &client_shared_secret,
+        &transcript_hash_32,
+        CipherRole::Client,
+    );
+
     // -------------------------------------------------------------------------
     // Phase 4: Receive Real Streamed Video Desktop Frames
     // -------------------------------------------------------------------------
@@ -218,14 +251,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=frames_to_read {
         let mut len_bytes = [0u8; 4];
         client_conn.read_exact(&mut len_bytes).await?;
-        let frame_len = u32::from_be_bytes(len_bytes) as usize;
-        assert!(frame_len > 0);
+        let packet_len = u32::from_be_bytes(len_bytes) as usize;
+        assert!(packet_len > 0);
 
-        let mut frame_data = vec![0u8; frame_len];
-        client_conn.read_exact(&mut frame_data).await?;
+        let mut encrypted_payload = vec![0u8; packet_len];
+        client_conn.read_exact(&mut encrypted_payload).await?;
+        let frame_data = client_crypto
+            .unpack_encrypted_payload(&encrypted_payload)
+            .expect("decrypt video frame");
         println!(
-            "  -> Frame #{}: Received {} bytes of active display frame buffer",
-            i, frame_len
+            "  -> Frame #{}: Received & decrypted {} bytes of active display frame buffer",
+            i,
+            frame_data.len()
         );
     }
     println!("  -> Video Streaming Pipeline Verified (30+ FPS sustained throughput)!");
@@ -246,7 +283,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             y,
         });
         let frame = pack_frame(seq, &move_msg)?;
-        client_conn.write_all(&frame).await?;
+        let enc_packet = client_crypto
+            .pack_encrypted_packet(&frame)
+            .expect("encrypt move frame");
+        client_conn.write_all(&enc_packet).await?;
     }
     println!("     10 Absolute Mouse Move events injected and processed.");
 
@@ -256,13 +296,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         button: MouseButtonCode::Left,
         state: KeyState::Pressed,
     });
-    client_conn.write_all(&pack_frame(11, &click_down)?).await?;
+    let down_frame = pack_frame(11, &click_down)?;
+    let enc_down = client_crypto
+        .pack_encrypted_packet(&down_frame)
+        .expect("encrypt click down");
+    client_conn.write_all(&enc_down).await?;
 
     let click_up = RemoteDeskMessage::MouseButton(MouseButtonPayload {
         button: MouseButtonCode::Left,
         state: KeyState::Released,
     });
-    client_conn.write_all(&pack_frame(12, &click_up)?).await?;
+    let up_frame = pack_frame(12, &click_up)?;
+    let enc_up = client_crypto
+        .pack_encrypted_packet(&up_frame)
+        .expect("encrypt click up");
+    client_conn.write_all(&enc_up).await?;
     println!("     Mouse click transaction completed.");
 
     // 3. Keyboard typing
@@ -272,14 +320,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state: KeyState::Pressed,
         modifiers: 0,
     });
-    client_conn.write_all(&pack_frame(13, &key_down)?).await?;
+    let key_down_frame = pack_frame(13, &key_down)?;
+    let enc_key_down = client_crypto
+        .pack_encrypted_packet(&key_down_frame)
+        .expect("encrypt key down");
+    client_conn.write_all(&enc_key_down).await?;
 
     let key_up = RemoteDeskMessage::KeyboardKey(KeyboardKeyPayload {
         scancode: 28,
         state: KeyState::Released,
         modifiers: 0,
     });
-    client_conn.write_all(&pack_frame(14, &key_up)?).await?;
+    let key_up_frame = pack_frame(14, &key_up)?;
+    let enc_key_up = client_crypto
+        .pack_encrypted_packet(&key_up_frame)
+        .expect("encrypt key up");
+    client_conn.write_all(&enc_key_up).await?;
     println!("     Keyboard input transaction completed.");
 
     // 4. Mouse Wheel Scroll
@@ -288,7 +344,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         delta_x: 0,
         delta_y: -120,
     });
-    client_conn.write_all(&pack_frame(15, &wheel_msg)?).await?;
+    let wheel_frame = pack_frame(15, &wheel_msg)?;
+    let enc_wheel = client_crypto
+        .pack_encrypted_packet(&wheel_frame)
+        .expect("encrypt wheel");
+    client_conn.write_all(&enc_wheel).await?;
     println!("     Mouse wheel scroll injected.");
 
     tokio::time::sleep(Duration::from_millis(50)).await;

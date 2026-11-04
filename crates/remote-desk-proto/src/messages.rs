@@ -21,6 +21,8 @@ pub enum MessageType {
     Ping = 0x20,
     Pong = 0x21,
 
+    EncryptedFrame = 0x30,
+
     Disconnect = 0xFF,
 }
 
@@ -41,6 +43,7 @@ impl TryFrom<u8> for MessageType {
             0x13 => Ok(MessageType::ClipboardData),
             0x20 => Ok(MessageType::Ping),
             0x21 => Ok(MessageType::Pong),
+            0x30 => Ok(MessageType::EncryptedFrame),
             0xFF => Ok(MessageType::Disconnect),
             other => Err(other),
         }
@@ -211,6 +214,7 @@ pub enum RemoteDeskMessage {
     Ping(PingPayload),
     Pong(PongPayload),
     Disconnect(DisconnectPayload),
+    EncryptedFrame(Vec<u8>),
 }
 
 impl RemoteDeskMessage {
@@ -228,6 +232,7 @@ impl RemoteDeskMessage {
             RemoteDeskMessage::ClipboardData(_) => MessageType::ClipboardData,
             RemoteDeskMessage::Ping(_) => MessageType::Ping,
             RemoteDeskMessage::Pong(_) => MessageType::Pong,
+            RemoteDeskMessage::EncryptedFrame(_) => MessageType::EncryptedFrame,
             RemoteDeskMessage::Disconnect(_) => MessageType::Disconnect,
         }
     }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use remote_desk_core::{
-    compute_sas_code, DeviceIdentity, EphemeralKeyExchange, SessionAction, SessionEvent,
-    SessionStateMachine,
+    compute_sas_code, CipherRole, DeviceIdentity, EphemeralKeyExchange, SessionAction,
+    SessionCrypto, SessionEvent, SessionStateMachine,
 };
 use remote_desk_linux::{
     CaptureError, InputError, InputInjectorBackend, MockCaptureBackend, MockInputInjector,
@@ -46,6 +46,18 @@ pub struct HandshakeResponse {
     pub host_ephemeral_pubkey: [u8; 32],
     pub host_signature: Vec<u8>,
     pub transcript_hash: [u8; 32],
+    pub shared_secret: [u8; 32],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityAuditEntry {
+    pub id: String,
+    pub timestamp: String,
+    pub device_id: String,
+    pub event: String,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sas_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +93,7 @@ pub struct HostService {
     pub sequence_tracker: Arc<Mutex<SequenceWindowTracker>>,
     pub trusted_devices: Arc<Mutex<remote_desk_core::identity::TrustedDeviceStore>>,
     pub approval_tx: Arc<tokio::sync::broadcast::Sender<bool>>,
+    pub audit_logs: Arc<Mutex<Vec<SecurityAuditEntry>>>,
 }
 
 /// Adapter wrapping Windows DXGI capture engine to satisfy cross-platform ScreenCaptureBackend
@@ -205,6 +218,7 @@ impl HostService {
                 remote_desk_core::identity::TrustedDeviceStore::new(),
             )),
             approval_tx: Arc::new(approval_tx),
+            audit_logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -258,6 +272,37 @@ impl HostService {
 
     pub fn device_id(&self) -> String {
         self.identity.device_id()
+    }
+
+    /// Records a security audit entry into the bounded audit log
+    pub async fn log_audit(
+        &self,
+        device_id: &str,
+        event: &str,
+        outcome: &str,
+        sas_code: Option<String>,
+    ) {
+        let now_str = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| {
+                let secs = d.as_secs();
+                format!("epoch-{}", secs)
+            })
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let id = format!("aud-{:08x}", rand::random::<u32>());
+        let mut logs = self.audit_logs.lock().await;
+        if logs.len() >= 100 {
+            logs.remove(0);
+        }
+        logs.push(SecurityAuditEntry {
+            id,
+            timestamp: now_str,
+            device_id: device_id.to_string(),
+            event: event.to_string(),
+            outcome: outcome.to_string(),
+            sas_code,
+        });
     }
 
     /// Discovers connected display monitors
@@ -340,12 +385,34 @@ impl HostService {
                 );
                 sm.transition(SessionEvent::ApprovalGranted)
                     .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
+                self.log_audit(
+                    peer_id,
+                    "Unattended Session Auto-Approval",
+                    "granted",
+                    Some(sas_code.clone()),
+                )
+                .await;
             } else {
                 warn!(
                     "Unattended mode enabled, but peer '{}' is NOT in trusted devices store; auto-approval denied",
                     peer_id
                 );
+                self.log_audit(
+                    peer_id,
+                    "Unattended Handshake Attempt",
+                    "denied",
+                    Some(sas_code.clone()),
+                )
+                .await;
             }
+        } else {
+            self.log_audit(
+                peer_id,
+                "Attended Handshake Request",
+                "pending",
+                Some(sas_code.clone()),
+            )
+            .await;
         }
 
         Ok(HandshakeResponse {
@@ -353,6 +420,7 @@ impl HostService {
             host_ephemeral_pubkey,
             host_signature: host_signature.to_vec(),
             transcript_hash,
+            shared_secret,
         })
     }
 
@@ -363,6 +431,8 @@ impl HostService {
             .transition(SessionEvent::ApprovalGranted)
             .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
         let _ = self.approval_tx.send(true);
+        self.log_audit("controller", "Manual Approval Granted", "granted", None)
+            .await;
         Ok(action)
     }
 
@@ -373,6 +443,8 @@ impl HostService {
             .transition(SessionEvent::ApprovalDenied)
             .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
         let _ = self.approval_tx.send(false);
+        self.log_audit("controller", "Manual Approval Denied", "denied", None)
+            .await;
         Ok(action)
     }
 
@@ -477,6 +549,9 @@ impl HostService {
             .stop_capture()
             .await
             .map_err(|e| HostError::Capture(e.to_string()))?;
+
+        self.log_audit("controller", "Session Terminated", "terminated", None)
+            .await;
 
         info!("Host session deallocated cleanly. Zero lingering resource locks.");
         Ok(())
@@ -607,11 +682,144 @@ impl HostService {
                 "/api/devices" => {
                     let store = self.trusted_devices.lock().await;
                     let trusted_list = store.list_devices();
+                    let devices_view: Vec<_> = trusted_list
+                        .iter()
+                        .map(|d| {
+                            serde_json::json!({
+                                "device_id": d.device_id,
+                                "name": d.friendly_name,
+                                "trusted_since": format!("epoch-{}", d.paired_at_secs),
+                                "status": if d.is_revoked { "revoked" } else { "paired" },
+                            })
+                        })
+                        .collect();
                     let body = serde_json::json!({
+                        "devices": devices_view,
                         "trusted": trusted_list,
                         "available": [],
                         "trusted_devices": trusted_list,
                         "revoked_devices": []
+                    })
+                    .to_string();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    return Ok(());
+                }
+                "/api/devices/trust" => {
+                    if !peer_addr.ip().is_loopback() {
+                        let err_body =
+                            "{\"error\":\"Forbidden: admin operations restricted to loopback\"}";
+                        let resp = format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            err_body.len(),
+                            err_body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return Ok(());
+                    }
+                    let body_str = req_str.split("\r\n\r\n").nth(1).unwrap_or("");
+                    #[derive(Deserialize)]
+                    struct TrustReq {
+                        device_id: String,
+                        public_key_hex: String,
+                        friendly_name: Option<String>,
+                    }
+                    if let Ok(req) = serde_json::from_str::<TrustReq>(body_str) {
+                        let name = req.friendly_name.unwrap_or_else(|| req.device_id.clone());
+                        let now_secs = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        self.trusted_devices.lock().await.trust_device(
+                            req.device_id.clone(),
+                            req.public_key_hex,
+                            name,
+                            now_secs,
+                        );
+                        self.log_audit(
+                            &req.device_id,
+                            "Device Added to Trusted Store",
+                            "granted",
+                            None,
+                        )
+                        .await;
+                        let resp_body = "{\"status\":\"ok\",\"action\":\"trusted\"}";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            resp_body.len(),
+                            resp_body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else {
+                        let resp_body = "{\"error\":\"Invalid request body\"}";
+                        let resp = format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            resp_body.len(),
+                            resp_body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    }
+                    return Ok(());
+                }
+                "/api/devices/revoke" => {
+                    if !peer_addr.ip().is_loopback() {
+                        let err_body =
+                            "{\"error\":\"Forbidden: admin operations restricted to loopback\"}";
+                        let resp = format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            err_body.len(),
+                            err_body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return Ok(());
+                    }
+                    let body_str = req_str.split("\r\n\r\n").nth(1).unwrap_or("");
+                    #[derive(Deserialize)]
+                    struct RevokeReq {
+                        device_id: String,
+                    }
+                    if let Ok(req) = serde_json::from_str::<RevokeReq>(body_str) {
+                        let revoked = self
+                            .trusted_devices
+                            .lock()
+                            .await
+                            .revoke_device(&req.device_id);
+                        self.log_audit(
+                            &req.device_id,
+                            "Device Revoked from Trusted Store",
+                            "revoked",
+                            None,
+                        )
+                        .await;
+                        let resp_body = format!(
+                            "{{\"status\":\"ok\",\"action\":\"revoked\",\"found\":{}}}",
+                            revoked
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            resp_body.len(),
+                            resp_body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else {
+                        let resp_body = "{\"error\":\"Invalid request body\"}";
+                        let resp = format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            resp_body.len(),
+                            resp_body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    }
+                    return Ok(());
+                }
+                "/api/audit" => {
+                    let logs = self.audit_logs.lock().await;
+                    let body = serde_json::json!({
+                        "audit_logs": &*logs
                     })
                     .to_string();
                     let resp = format!(
@@ -1050,6 +1258,7 @@ impl HostService {
             host_ephemeral_pubkey_hex: String,
             host_signature_hex: String,
             transcript_hash_hex: String,
+            cipher: &'a str,
         }
 
         if !is_approved {
@@ -1067,6 +1276,7 @@ impl HostService {
                 host_ephemeral_pubkey_hex: hex_encode(&handshake_resp.host_ephemeral_pubkey),
                 host_signature_hex: hex_encode(&handshake_resp.host_signature),
                 transcript_hash_hex: hex_encode(&handshake_resp.transcript_hash),
+                cipher: "chacha20poly1305",
             };
             let mut pending_json =
                 serde_json::to_vec(&pending_obj).map_err(|e| HostError::Proto(e.to_string()))?;
@@ -1111,6 +1321,7 @@ impl HostService {
             host_ephemeral_pubkey_hex: hex_encode(&handshake_resp.host_ephemeral_pubkey),
             host_signature_hex: hex_encode(&handshake_resp.host_signature),
             transcript_hash_hex: hex_encode(&handshake_resp.transcript_hash),
+            cipher: "chacha20poly1305",
         };
 
         let mut resp_json =
@@ -1137,11 +1348,18 @@ impl HostService {
         }
         drop(capture);
 
+        let session_crypto = Arc::new(SessionCrypto::new(
+            &handshake_resp.shared_secret,
+            &handshake_resp.transcript_hash,
+            CipherRole::Host,
+        ));
+
         let (stop_tx, mut stop_rx) = tokio::sync::broadcast::channel::<()>(1);
         let stop_tx_stream = stop_tx.clone();
 
-        // Spawn real video frame streaming loop (~30 FPS)
+        // Spawn authenticated encrypted video frame streaming loop (~30 FPS)
         let capture_arc = self.capture.clone();
+        let crypto_stream = session_crypto.clone();
         let stream_task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_millis(33));
             loop {
@@ -1153,11 +1371,11 @@ impl HostService {
                         let mut cap = capture_arc.lock().await;
                         if let Ok(frame) = cap.next_frame().await {
                             drop(cap);
-                            let frame_len = (frame.data.len() as u32).to_be_bytes();
-                            if write_half.write_all(&frame_len).await.is_err() {
-                                break;
-                            }
-                            if write_half.write_all(&frame.data).await.is_err() {
+                            if let Ok(packet) = crypto_stream.pack_encrypted_packet(&frame.data) {
+                                if write_half.write_all(&packet).await.is_err() {
+                                    break;
+                                }
+                            } else {
                                 break;
                             }
                         } else {
@@ -1168,7 +1386,7 @@ impl HostService {
             }
         });
 
-        // Live input frame receiving loop with streaming accumulator
+        // Live authenticated encrypted input frame receiving loop with streaming accumulator
         let mut stream_buf = Vec::new();
         let mut in_buf = [0u8; 4096];
         loop {
@@ -1179,26 +1397,46 @@ impl HostService {
                 }
                 Ok(n) => {
                     stream_buf.extend_from_slice(&in_buf[..n]);
-                    while !stream_buf.is_empty() {
-                        match remote_desk_proto::unpack_streaming_frame(&stream_buf) {
-                            Ok(((seq, msg), consumed)) => {
-                                if let Err(e) = self.dispatch_message(seq, msg).await {
-                                    debug!("Input processing notice: {}", e);
+                    while stream_buf.len() >= 4 {
+                        let packet_len =
+                            u32::from_be_bytes(stream_buf[0..4].try_into().unwrap()) as usize;
+                        if packet_len > remote_desk_proto::MAX_PAYLOAD_SIZE {
+                            warn!(
+                                "Input packet too large ({} bytes). Dropping connection.",
+                                packet_len
+                            );
+                            return Err(HostError::Proto(
+                                "Packet payload exceeds safety limit".to_string(),
+                            ));
+                        }
+                        if stream_buf.len() < 4 + packet_len {
+                            break;
+                        }
+
+                        let payload = &stream_buf[4..4 + packet_len];
+                        match session_crypto.unpack_encrypted_payload(payload) {
+                            Ok(plaintext) => match remote_desk_proto::unpack_frame(&plaintext) {
+                                Ok((seq, msg)) => {
+                                    if let Err(e) = self.dispatch_message(seq, msg).await {
+                                        debug!("Input processing notice: {}", e);
+                                    }
                                 }
-                                stream_buf.drain(..consumed);
-                            }
-                            Err(remote_desk_proto::ProtoError::BufferTooShort { .. }) => {
-                                break;
-                            }
+                                Err(e) => {
+                                    warn!("Input unpacking error: {}", e);
+                                }
+                            },
                             Err(e) => {
                                 warn!(
-                                    "Input stream decoding error: {}, dropping corrupted frame buffer",
+                                    "Ciphertext authentication failed; rejecting input packet: {}",
                                     e
                                 );
-                                stream_buf.clear();
-                                break;
+                                return Err(HostError::Crypto(format!(
+                                    "Packet decryption failed: {}",
+                                    e
+                                )));
                             }
                         }
+                        stream_buf.drain(..4 + packet_len);
                     }
                 }
                 Err(e) => {

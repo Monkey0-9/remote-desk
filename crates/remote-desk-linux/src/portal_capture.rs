@@ -218,6 +218,19 @@ impl ScreenCaptureBackend for WaylandPortalCaptureBackend {
             .find(|m| m.id == monitor_id)
             .ok_or(CaptureError::MonitorNotFound(monitor_id))?;
 
+        if !self.allow_mock {
+            if let Some(fd) = self.pipewire_fd {
+                return Err(CaptureError::BackendError(format!(
+                    "PipeWire remote stream on fd {} requires active compositor buffer negotiation. Direct synthetic output is forbidden.",
+                    fd
+                )));
+            } else {
+                return Err(CaptureError::BackendError(
+                    "No active PipeWire file descriptor acquired from ScreenCast portal. Portal capture failed closed.".to_string(),
+                ));
+            }
+        }
+
         let count = self.frame_count.fetch_add(1, Ordering::Relaxed) + 1;
         let width = monitor.width;
         let height = monitor.height;
