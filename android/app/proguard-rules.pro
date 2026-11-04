@@ -4,8 +4,9 @@
 -keep class org.webrtc.** { *; }
 -dontwarn org.webrtc.**
 
-# Preserve UniFFI Rust core bridge
--keep class uniffi.** { *; }
+# Preserve Remote-Desk protocol models and core security classes
+-keep class org.remotedesk.proto.** { *; }
+-keep class org.remotedesk.security.** { *; }
 -keep class org.remotedesk.core.** { *; }
 
 # Obfuscate internal business logic and gesture mapping

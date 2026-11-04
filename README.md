@@ -21,7 +21,7 @@ Remote-Desk is built as a modular Cargo workspace cleanly separating platform-ag
                                   |  (Jetpack Compose / Kotlin) |
                                   +--------------+--------------+
                                                  |
-                                       UniFFI / DTLS-SRTP
+                                  Wire Protocol / DTLS-SRTP
                                                  |
                                                  v
 +------------------------+        +--------------+--------------+        +--------------------------+

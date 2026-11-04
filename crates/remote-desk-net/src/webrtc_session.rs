@@ -104,12 +104,17 @@ impl WebRtcPeerSession {
         let session_id = format!("rd_rtc_{}", rand::random::<u64>());
         let ice_ufrag = format!("ufr_{:08x}", rand::random::<u32>());
         let ice_pwd = format!("pwd_{:016x}", rand::random::<u64>());
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, session_id.as_bytes());
+        sha2::Digest::update(&mut hasher, ice_ufrag.as_bytes());
+        sha2::Digest::update(&mut hasher, ice_pwd.as_bytes());
+        let hash = sha2::Digest::finalize(hasher);
         let dtls_fingerprint = format!(
-            "sha-256 {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(),
-            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(),
-            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(),
-            rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>()
+            "sha-256 {}",
+            hash.iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(":")
         );
 
         Ok(Self {

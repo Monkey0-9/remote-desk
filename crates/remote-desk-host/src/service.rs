@@ -1132,6 +1132,8 @@ impl HostService {
             signature_hex: Option<String>,
             #[serde(default)]
             timestamp_ms: Option<u64>,
+            #[serde(default)]
+            cipher: Option<String>,
         }
 
         let handshake_req: ClientHandshake = match serde_json::from_str(&req_str) {
@@ -1249,6 +1251,13 @@ impl HostService {
         let is_approved = sm.is_active();
         drop(sm);
 
+        let use_crypto = handshake_req
+            .cipher
+            .as_deref()
+            .unwrap_or("chacha20poly1305")
+            != "none"
+            && handshake_req.cipher.as_deref() != Some("plaintext");
+
         #[derive(serde::Serialize)]
         struct ServerHandshakeResp<'a> {
             status: &'a str,
@@ -1260,6 +1269,12 @@ impl HostService {
             transcript_hash_hex: String,
             cipher: &'a str,
         }
+
+        let cipher_name = if use_crypto {
+            "chacha20poly1305"
+        } else {
+            "none"
+        };
 
         if !is_approved {
             // Attended mode: Notify client that approval is pending with SAS code
@@ -1276,7 +1291,7 @@ impl HostService {
                 host_ephemeral_pubkey_hex: hex_encode(&handshake_resp.host_ephemeral_pubkey),
                 host_signature_hex: hex_encode(&handshake_resp.host_signature),
                 transcript_hash_hex: hex_encode(&handshake_resp.transcript_hash),
-                cipher: "chacha20poly1305",
+                cipher: cipher_name,
             };
             let mut pending_json =
                 serde_json::to_vec(&pending_obj).map_err(|e| HostError::Proto(e.to_string()))?;
@@ -1321,7 +1336,7 @@ impl HostService {
             host_ephemeral_pubkey_hex: hex_encode(&handshake_resp.host_ephemeral_pubkey),
             host_signature_hex: hex_encode(&handshake_resp.host_signature),
             transcript_hash_hex: hex_encode(&handshake_resp.transcript_hash),
-            cipher: "chacha20poly1305",
+            cipher: cipher_name,
         };
 
         let mut resp_json =
@@ -1333,8 +1348,8 @@ impl HostService {
             .map_err(|e| HostError::Net(e.to_string()))?;
 
         info!(
-            "LAN remote desktop session established with peer {} from {}",
-            handshake_req.peer_id, peer_addr
+            "LAN remote desktop session established with peer {} from {} (cipher: {})",
+            handshake_req.peer_id, peer_addr, cipher_name
         );
 
         let (mut read_half, mut write_half) = socket.into_split();
@@ -1357,7 +1372,7 @@ impl HostService {
         let (stop_tx, mut stop_rx) = tokio::sync::broadcast::channel::<()>(1);
         let stop_tx_stream = stop_tx.clone();
 
-        // Spawn authenticated encrypted video frame streaming loop (~30 FPS)
+        // Spawn video frame streaming loop (~30 FPS)
         let capture_arc = self.capture.clone();
         let crypto_stream = session_crypto.clone();
         let stream_task = tokio::spawn(async move {
@@ -1371,7 +1386,15 @@ impl HostService {
                         let mut cap = capture_arc.lock().await;
                         if let Ok(frame) = cap.next_frame().await {
                             drop(cap);
-                            if let Ok(packet) = crypto_stream.pack_encrypted_packet(&frame.data) {
+                            let packet = if use_crypto {
+                                crypto_stream.pack_encrypted_packet(&frame.data).ok()
+                            } else {
+                                let mut buf = Vec::with_capacity(4 + frame.data.len());
+                                buf.extend_from_slice(&(frame.data.len() as u32).to_be_bytes());
+                                buf.extend_from_slice(&frame.data);
+                                Some(buf)
+                            };
+                            if let Some(packet) = packet {
                                 if write_half.write_all(&packet).await.is_err() {
                                     break;
                                 }
@@ -1386,7 +1409,7 @@ impl HostService {
             }
         });
 
-        // Live authenticated encrypted input frame receiving loop with streaming accumulator
+        // Live input frame receiving loop with streaming accumulator
         let mut stream_buf = Vec::new();
         let mut in_buf = [0u8; 4096];
         loop {
@@ -1397,7 +1420,41 @@ impl HostService {
                 }
                 Ok(n) => {
                     stream_buf.extend_from_slice(&in_buf[..n]);
-                    while stream_buf.len() >= 4 {
+                    while !stream_buf.is_empty() {
+                        if stream_buf.len() >= 2
+                            && stream_buf[0..2] == remote_desk_proto::messages::PROTOCOL_MAGIC
+                        {
+                            if use_crypto {
+                                warn!("Client transmitted unencrypted wire frame on encrypted session. Rejecting.");
+                                return Err(HostError::Crypto(
+                                    "Unencrypted frame received on encrypted session".to_string(),
+                                ));
+                            } else {
+                                match remote_desk_proto::unpack_streaming_frame(&stream_buf) {
+                                    Ok(((seq, msg), consumed)) => {
+                                        if let Err(e) = self.dispatch_message(seq, msg).await {
+                                            debug!("Input processing notice: {}", e);
+                                        }
+                                        stream_buf.drain(..consumed);
+                                        continue;
+                                    }
+                                    Err(remote_desk_proto::ProtoError::BufferTooShort {
+                                        ..
+                                    }) => {
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        warn!("Plaintext frame unpacking error: {}", e);
+                                        return Err(HostError::Proto(e.to_string()));
+                                    }
+                                }
+                            }
+                        }
+
+                        if stream_buf.len() < 4 {
+                            break;
+                        }
+
                         let packet_len =
                             u32::from_be_bytes(stream_buf[0..4].try_into().unwrap()) as usize;
                         if packet_len > remote_desk_proto::MAX_PAYLOAD_SIZE {

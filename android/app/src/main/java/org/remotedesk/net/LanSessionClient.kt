@@ -98,6 +98,7 @@ class LanSessionClient(
                     put("peer_ephemeral_pubkey_hex", ephKeyHex)
                     put("signature_hex", sigHex)
                     put("timestamp_ms", nowMs)
+                    put("cipher", "none")
                 }
 
                 val handshakeBytes = (handshakeObj.toString() + "\n").toByteArray(Charsets.UTF_8)

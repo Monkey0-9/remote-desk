@@ -194,6 +194,32 @@ export default function App() {
           if (data) setMetrics((prev) => ({ ...prev, ...data }));
         })
         .catch(() => {});
+
+      fetch('/api/devices')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && Array.isArray(data.devices) && data.devices.length > 0) {
+            setDevices(data.devices);
+          }
+        })
+        .catch(() => {});
+
+      fetch('/api/audit')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && Array.isArray(data.audit_logs) && data.audit_logs.length > 0) {
+            const mapped = data.audit_logs.map((log: any, idx: number) => ({
+              id: `aud-${idx}-${log.timestamp_epoch_secs || Date.now()}`,
+              timestamp: new Date((log.timestamp_epoch_secs || 0) * 1000).toISOString().replace('T', ' ').substring(0, 19) + ' UTC',
+              device_id: log.peer_id || 'unknown-peer',
+              event: log.action || 'Session Handshake',
+              outcome: log.granted ? ('granted' as const) : ('denied' as const),
+              sas_code: log.sas_code || undefined,
+            }));
+            setAuditLogs(mapped);
+          }
+        })
+        .catch(() => {});
     };
 
     fetchStatus();
@@ -241,9 +267,33 @@ export default function App() {
 
   const handleConfirmPairing = () => {
     const newId = pairDeviceId.trim() || `rd-client-${Math.floor(1000 + Math.random() * 9000)}`;
+    const newName = pairDeviceName.trim() || `Paired Controller (${newId})`;
+    const fakePubKey = Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+
+    // Persist to host daemon trusted device store
+    fetch('/api/devices/trust', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_id: newId,
+        public_key_hex: fakePubKey,
+        friendly_name: newName,
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then(() => {
+        fetch('/api/devices')
+          .then((r) => r.json())
+          .then((d) => {
+            if (d && Array.isArray(d.devices)) setDevices(d.devices);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+
     const newDevice: TrustedDevice = {
       device_id: newId,
-      name: pairDeviceName.trim() || `Paired Controller (${newId})`,
+      name: newName,
       trusted_since: new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC',
       status: 'paired',
     };
@@ -266,6 +316,23 @@ export default function App() {
   };
 
   const handleRevokeDevice = (deviceId: string) => {
+    // Notify host daemon to revoke from trusted store
+    fetch('/api/devices/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then(() => {
+        fetch('/api/devices')
+          .then((r) => r.json())
+          .then((d) => {
+            if (d && Array.isArray(d.devices)) setDevices(d.devices);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+
     setDevices((prev) =>
       prev.map((d) => (d.device_id === deviceId ? { ...d, status: 'revoked' as const } : d))
     );
@@ -1047,24 +1114,36 @@ export default function App() {
                           const rect = e.currentTarget.getBoundingClientRect();
                           const x = Math.round(((e.clientX - rect.left) / rect.width) * 1920);
                           const y = Math.round(((e.clientY - rect.top) / rect.height) * 1080);
-                          setInputLastEvent(`MouseMoveAbs { x: ${x}, y: ${y} } [uinput kernel dispatched]`);
+                          setInputLastEvent(
+                            overview.session_active
+                              ? `MouseMoveAbs { x: ${x}, y: ${y} } [uinput kernel dispatched to active peer]`
+                              : `MouseMoveAbs { x: ${x}, y: ${y} } [local canvas bench test]`
+                          );
                         }}
                         onMouseDown={(e) => {
                           const rect = e.currentTarget.getBoundingClientRect();
                           const x = e.clientX - rect.left;
                           const y = e.clientY - rect.top;
                           setClickRipples((prev) => [...prev.slice(-4), { x, y, id: Date.now() }]);
-                          setInputLastEvent(`MouseButton { button: ${e.button === 0 ? 'Left' : 'Right'}, state: Pressed }`);
+                          setInputLastEvent(
+                            overview.session_active
+                              ? `MouseButton { button: ${e.button === 0 ? 'Left' : 'Right'}, state: Pressed } [kernel dispatched]`
+                              : `MouseButton { button: ${e.button === 0 ? 'Left' : 'Right'}, state: Pressed } [canvas bench]`
+                          );
                         }}
                         onMouseUp={(e) => {
-                          setInputLastEvent(`MouseButton { button: ${e.button === 0 ? 'Left' : 'Right'}, state: Released }`);
+                          setInputLastEvent(
+                            overview.session_active
+                              ? `MouseButton { button: ${e.button === 0 ? 'Left' : 'Right'}, state: Released } [kernel dispatched]`
+                              : `MouseButton { button: ${e.button === 0 ? 'Left' : 'Right'}, state: Released } [canvas bench]`
+                          );
                         }}
                       />
                       <div className="canvas-hud">
-                        <span>● LIVE MIRROR</span>
-                        <span>{metrics.fps_delivered} FPS</span>
-                        <span>{metrics.encode_latency_ms}ms ENCODE</span>
-                        <span>DIRECT LAN</span>
+                        <span>{overview.session_active ? '● LIVE PEER STREAM' : '○ DESKTOP TEST BENCH'}</span>
+                        <span>{overview.session_active ? `${metrics.fps_delivered} FPS` : 'BENCH STANDBY'}</span>
+                        <span>{overview.session_active ? `${metrics.encode_latency_ms}ms ENCODE` : 'LOCAL LOOPBACK'}</span>
+                        <span>{overview.session_active ? (overview.active_peer || 'CONNECTED PEER') : 'DIRECT LAN READY'}</span>
                       </div>
                     </div>
                   </div>

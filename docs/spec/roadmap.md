@@ -81,7 +81,7 @@ flowchart TD
   - Implement `android/` Jetpack Compose application.
   - Build UI surfaces: Devices List (Screen A), Add Computer (Screen B), Connection Progress (Screen C), Active Session (Screen D), Settings (Screen E).
   - Integrate WebRTC Android library (`libwebrtc`) with `SurfaceViewRenderer`.
-  - UniFFI bridge connecting Android Kotlin to `remote-desk-core`.
+  - Wire protocol codec connecting Android Kotlin to `remote-desk-proto` and host daemon.
 - **Exit Criteria**:
   - Android application displays a live video stream from a Linux host over LAN.
   - Screen orientation switches (portrait to landscape) preserve aspect ratio without crashing.

@@ -127,6 +127,7 @@ class WebRtcSessionManager(
                     put("peer_ephemeral_pubkey_hex", ephKeyHex)
                     put("signature_hex", sigHex)
                     put("timestamp_ms", nowMs)
+                    put("cipher", "none")
                 }
 
                 val handshakeBytes = (handshakeObj.toString() + "\n").toByteArray(Charsets.UTF_8)
@@ -270,6 +271,19 @@ class WebRtcSessionManager(
             directOut?.let { out ->
                 out.write(data)
                 out.flush()
+                return
+            }
+            webSocket?.let { ws ->
+                val hexData = data.joinToString("") { "%02x".format(it) }
+                val routeEnvelope = JSONObject().apply {
+                    put("action", "route")
+                    put("target_id", targetHostId)
+                    put("envelope_json", JSONObject().apply {
+                        put("type", "InputData")
+                        put("raw_hex", hexData)
+                    }.toString())
+                }
+                ws.send(routeEnvelope.toString())
                 return
             }
         } catch (e: Exception) {

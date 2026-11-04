@@ -329,3 +329,123 @@ async fn test_tampered_encrypted_packet_causes_session_termination() {
     let _ = shutdown_tx.send(());
     let _ = daemon_task.await;
 }
+
+#[tokio::test]
+async fn test_e2e_lan_session_plaintext_mode_for_lightweight_controllers() {
+    let port = 19997;
+    let bind_addr = format!("127.0.0.1:{}", port);
+
+    let host_id = DeviceIdentity::generate();
+    let config = HostConfig {
+        bind_addr: bind_addr.clone(),
+        device_name: "Plaintext-Test-Host".to_string(),
+        unattended: true,
+        signal_server_url: None,
+        turn_servers: vec![],
+    };
+
+    let host = HostService::new_mock(host_id, config);
+    let host_arc = std::sync::Arc::new(host);
+    let host_daemon = host_arc.clone();
+
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let daemon_task = tokio::spawn(async move {
+        let _ = host_daemon.run_daemon(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut client_stream = TcpStream::connect(&bind_addr).await.expect("connect");
+
+    let client_id = DeviceIdentity::generate();
+    host_arc.trusted_devices.lock().await.trust_device(
+        client_id.device_id(),
+        client_id.public_key_hex(),
+        "Plaintext Test Client".to_string(),
+        0,
+    );
+
+    let client_exchange = EphemeralKeyExchange::new();
+    let eph_hex = hex_encode(&client_exchange.public_key_bytes());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let challenge = format!(
+        "RemoteDesk-LAN-Auth:{}:{}:{}",
+        client_id.device_id(),
+        eph_hex,
+        now_ms
+    );
+    let signature = client_id.sign(challenge.as_bytes());
+    let sig_hex = hex_encode(&signature);
+
+    // Client explicitly requests cipher: "none"
+    let handshake_json = serde_json::json!({
+        "peer_id": client_id.device_id(),
+        "peer_pubkey_hex": client_id.public_key_hex(),
+        "peer_ephemeral_pubkey_hex": eph_hex,
+        "signature_hex": sig_hex,
+        "timestamp_ms": now_ms,
+        "cipher": "none",
+    });
+
+    client_stream
+        .write_all(format!("{}\n", handshake_json).as_bytes())
+        .await
+        .expect("write handshake");
+
+    let mut resp_buf = vec![0u8; 1024];
+    let n = client_stream.read(&mut resp_buf).await.expect("read resp");
+    assert!(n > 0);
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+    assert!(resp_str.contains("\"status\":\"approved\""));
+    assert!(resp_str.contains("\"cipher\":\"none\""));
+
+    // Receive plaintext frame length header
+    let mut frame_len_buf = [0u8; 4];
+    client_stream
+        .read_exact(&mut frame_len_buf)
+        .await
+        .expect("read frame len");
+    let frame_len = u32::from_be_bytes(frame_len_buf) as usize;
+    assert!(frame_len > 0);
+
+    let mut frame_data = vec![0u8; frame_len];
+    client_stream
+        .read_exact(&mut frame_data)
+        .await
+        .expect("read frame data");
+    assert!(!frame_data.is_empty());
+
+    // Send direct plaintext wire protocol frame
+    let move_msg = RemoteDeskMessage::MouseMoveAbs(MouseMoveAbsPayload {
+        monitor_id: 0,
+        x: 0.75,
+        y: 0.25,
+    });
+    let move_frame = pack_frame(1, &move_msg).expect("pack move");
+    client_stream
+        .write_all(&move_frame)
+        .await
+        .expect("send plaintext move");
+
+    // Allow host to process input
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Verify host input injector processed the event
+    let input = host_arc.input.lock().await;
+    let mock = unsafe {
+        &*(&**input as *const dyn remote_desk_linux::InputInjectorBackend
+            as *const remote_desk_linux::MockInputInjector)
+    };
+    assert!(
+        mock.total_events_injected > 0,
+        "Host must inject processed plaintext event"
+    );
+    drop(input);
+
+    drop(client_stream);
+    let _ = shutdown_tx.send(());
+    let _ = daemon_task.await;
+}
