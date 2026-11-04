@@ -42,7 +42,7 @@ async fn test_dxgi_access_denied_handling() {
 
 #[tokio::test]
 async fn test_windows_send_input_and_fail_safe_release() {
-    let mut injector = SendInputInjector::new();
+    let mut injector = SendInputInjector::new().with_allow_mock(true);
 
     // Inject absolute pointer move
     injector.move_pointer(0.25, 0.75).await.unwrap();

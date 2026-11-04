@@ -22,7 +22,7 @@ async fn test_e2e_windows_capture_and_input_pipeline() {
     assert!(frame.width > 0);
     assert!(frame.height > 0);
 
-    let mut injector = SendInputInjector::new();
+    let mut injector = SendInputInjector::new().with_allow_mock(true);
 
     // 1. Controller sends normalized absolute mouse move (0.5, 0.5)
     let move_msg = RemoteDeskMessage::MouseMoveAbs(MouseMoveAbsPayload {

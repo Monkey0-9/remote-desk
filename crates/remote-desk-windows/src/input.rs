@@ -45,17 +45,26 @@ pub struct SendInputInjector {
     pub held_keys: HashSet<u32>,
     pub held_buttons: HashSet<MouseButtonCode>,
     pub injected_count: usize,
+    pub allow_mock: bool,
 }
 
 impl SendInputInjector {
     pub fn new() -> Self {
+        let ci_or_mock =
+            std::env::var("CI").is_ok() || std::env::var("REMOTE_DESK_MOCK_INPUT").is_ok();
         Self {
             current_x: 32768, // Center of virtual screen
             current_y: 32768,
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
             injected_count: 0,
+            allow_mock: ci_or_mock,
         }
+    }
+
+    pub fn with_allow_mock(mut self, allow: bool) -> Self {
+        self.allow_mock = allow;
+        self
     }
 
     #[cfg(target_os = "windows")]
@@ -72,10 +81,7 @@ impl SendInputInjector {
         if res == 0 {
             let err = windows_sys::Win32::Foundation::GetLastError();
             tracing::warn!("SendInput returned 0 (Win32 error: {})", err);
-            Err(WindowsInputError::InjectionFailed(format!(
-                "SendInput failed with Win32 error code: {}",
-                err
-            )))
+            Err(WindowsInputError::SendInputFailed(err))
         } else {
             Ok(())
         }
@@ -96,15 +102,17 @@ impl WindowsInputInjectorBackend for SendInputInjector {
         self.current_y = y;
 
         #[cfg(target_os = "windows")]
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-            let mut input: INPUT = std::mem::zeroed();
-            input.r#type = INPUT_MOUSE;
-            input.Anonymous.mi.dx = x as i32;
-            input.Anonymous.mi.dy = y as i32;
-            input.Anonymous.mi.dwFlags =
-                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-            Self::send_win32_input(input)?;
+        if !self.allow_mock {
+            unsafe {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                let mut input: INPUT = std::mem::zeroed();
+                input.r#type = INPUT_MOUSE;
+                input.Anonymous.mi.dx = x as i32;
+                input.Anonymous.mi.dy = y as i32;
+                input.Anonymous.mi.dwFlags =
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+                Self::send_win32_input(input)?;
+            }
         }
 
         self.injected_count += 1;
@@ -116,14 +124,16 @@ impl WindowsInputInjectorBackend for SendInputInjector {
         self.current_y = (self.current_y as i32 + dy as i32).clamp(0, 65535) as u16;
 
         #[cfg(target_os = "windows")]
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-            let mut input: INPUT = std::mem::zeroed();
-            input.r#type = INPUT_MOUSE;
-            input.Anonymous.mi.dx = dx as i32;
-            input.Anonymous.mi.dy = dy as i32;
-            input.Anonymous.mi.dwFlags = MOUSEEVENTF_MOVE;
-            Self::send_win32_input(input)?;
+        if !self.allow_mock {
+            unsafe {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                let mut input: INPUT = std::mem::zeroed();
+                input.r#type = INPUT_MOUSE;
+                input.Anonymous.mi.dx = dx as i32;
+                input.Anonymous.mi.dy = dy as i32;
+                input.Anonymous.mi.dwFlags = MOUSEEVENTF_MOVE;
+                Self::send_win32_input(input)?;
+            }
         }
 
         self.injected_count += 1;
@@ -136,35 +146,37 @@ impl WindowsInputInjectorBackend for SendInputInjector {
         down: bool,
     ) -> Result<(), WindowsInputError> {
         #[cfg(target_os = "windows")]
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-            let mut input: INPUT = std::mem::zeroed();
-            input.r#type = INPUT_MOUSE;
-            input.Anonymous.mi.dwFlags = match (button, down) {
-                (MouseButtonCode::Left, true) => MOUSEEVENTF_LEFTDOWN,
-                (MouseButtonCode::Left, false) => MOUSEEVENTF_LEFTUP,
-                (MouseButtonCode::Right, true) => MOUSEEVENTF_RIGHTDOWN,
-                (MouseButtonCode::Right, false) => MOUSEEVENTF_RIGHTUP,
-                (MouseButtonCode::Middle, true) => MOUSEEVENTF_MIDDLEDOWN,
-                (MouseButtonCode::Middle, false) => MOUSEEVENTF_MIDDLEUP,
-                (MouseButtonCode::Back, true) => {
-                    input.Anonymous.mi.mouseData = 1;
-                    MOUSEEVENTF_XDOWN
-                }
-                (MouseButtonCode::Back, false) => {
-                    input.Anonymous.mi.mouseData = 1;
-                    MOUSEEVENTF_XUP
-                }
-                (MouseButtonCode::Forward, true) => {
-                    input.Anonymous.mi.mouseData = 2;
-                    MOUSEEVENTF_XDOWN
-                }
-                (MouseButtonCode::Forward, false) => {
-                    input.Anonymous.mi.mouseData = 2;
-                    MOUSEEVENTF_XUP
-                }
-            };
-            Self::send_win32_input(input)?;
+        if !self.allow_mock {
+            unsafe {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                let mut input: INPUT = std::mem::zeroed();
+                input.r#type = INPUT_MOUSE;
+                input.Anonymous.mi.dwFlags = match (button, down) {
+                    (MouseButtonCode::Left, true) => MOUSEEVENTF_LEFTDOWN,
+                    (MouseButtonCode::Left, false) => MOUSEEVENTF_LEFTUP,
+                    (MouseButtonCode::Right, true) => MOUSEEVENTF_RIGHTDOWN,
+                    (MouseButtonCode::Right, false) => MOUSEEVENTF_RIGHTUP,
+                    (MouseButtonCode::Middle, true) => MOUSEEVENTF_MIDDLEDOWN,
+                    (MouseButtonCode::Middle, false) => MOUSEEVENTF_MIDDLEUP,
+                    (MouseButtonCode::Back, true) => {
+                        input.Anonymous.mi.mouseData = 1;
+                        MOUSEEVENTF_XDOWN
+                    }
+                    (MouseButtonCode::Back, false) => {
+                        input.Anonymous.mi.mouseData = 1;
+                        MOUSEEVENTF_XUP
+                    }
+                    (MouseButtonCode::Forward, true) => {
+                        input.Anonymous.mi.mouseData = 2;
+                        MOUSEEVENTF_XDOWN
+                    }
+                    (MouseButtonCode::Forward, false) => {
+                        input.Anonymous.mi.mouseData = 2;
+                        MOUSEEVENTF_XUP
+                    }
+                };
+                Self::send_win32_input(input)?;
+            }
         }
 
         if down {
@@ -178,13 +190,15 @@ impl WindowsInputInjectorBackend for SendInputInjector {
 
     async fn mouse_wheel(&mut self, _delta: i16) -> Result<(), WindowsInputError> {
         #[cfg(target_os = "windows")]
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-            let mut input: INPUT = std::mem::zeroed();
-            input.r#type = INPUT_MOUSE;
-            input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
-            input.Anonymous.mi.mouseData = ((_delta as i32) * 120) as u32; // WHEEL_DELTA
-            Self::send_win32_input(input)?;
+        if !self.allow_mock {
+            unsafe {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                let mut input: INPUT = std::mem::zeroed();
+                input.r#type = INPUT_MOUSE;
+                input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
+                input.Anonymous.mi.mouseData = ((_delta as i32) * 120) as u32; // WHEEL_DELTA
+                Self::send_win32_input(input)?;
+            }
         }
 
         self.injected_count += 1;
@@ -193,13 +207,15 @@ impl WindowsInputInjectorBackend for SendInputInjector {
 
     async fn mouse_wheel_horizontal(&mut self, _delta: i16) -> Result<(), WindowsInputError> {
         #[cfg(target_os = "windows")]
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-            let mut input: INPUT = std::mem::zeroed();
-            input.r#type = INPUT_MOUSE;
-            input.Anonymous.mi.dwFlags = MOUSEEVENTF_HWHEEL;
-            input.Anonymous.mi.mouseData = ((_delta as i32) * 120) as u32; // WHEEL_DELTA
-            Self::send_win32_input(input)?;
+        if !self.allow_mock {
+            unsafe {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                let mut input: INPUT = std::mem::zeroed();
+                input.r#type = INPUT_MOUSE;
+                input.Anonymous.mi.dwFlags = MOUSEEVENTF_HWHEEL;
+                input.Anonymous.mi.mouseData = ((_delta as i32) * 120) as u32; // WHEEL_DELTA
+                Self::send_win32_input(input)?;
+            }
         }
 
         self.injected_count += 1;
@@ -208,16 +224,18 @@ impl WindowsInputInjectorBackend for SendInputInjector {
 
     async fn keyboard_key(&mut self, scancode: u32, down: bool) -> Result<(), WindowsInputError> {
         #[cfg(target_os = "windows")]
-        unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-            let mut input: INPUT = std::mem::zeroed();
-            input.r#type = INPUT_KEYBOARD;
-            input.Anonymous.ki.wScan = (scancode & 0xFFFF) as u16;
-            input.Anonymous.ki.dwFlags = KEYEVENTF_SCANCODE;
-            if !down {
-                input.Anonymous.ki.dwFlags |= KEYEVENTF_KEYUP;
+        if !self.allow_mock {
+            unsafe {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                let mut input: INPUT = std::mem::zeroed();
+                input.r#type = INPUT_KEYBOARD;
+                input.Anonymous.ki.wScan = (scancode & 0xFFFF) as u16;
+                input.Anonymous.ki.dwFlags = KEYEVENTF_SCANCODE;
+                if !down {
+                    input.Anonymous.ki.dwFlags |= KEYEVENTF_KEYUP;
+                }
+                Self::send_win32_input(input)?;
             }
-            Self::send_win32_input(input)?;
         }
 
         if down {
@@ -235,26 +253,28 @@ impl WindowsInputInjectorBackend for SendInputInjector {
         let buttons: Vec<MouseButtonCode> = self.held_buttons.drain().collect();
         for _btn in buttons {
             #[cfg(target_os = "windows")]
-            unsafe {
-                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-                let mut input: INPUT = std::mem::zeroed();
-                input.r#type = INPUT_MOUSE;
-                input.Anonymous.mi.dwFlags = match _btn {
-                    MouseButtonCode::Left => MOUSEEVENTF_LEFTUP,
-                    MouseButtonCode::Right => MOUSEEVENTF_RIGHTUP,
-                    MouseButtonCode::Middle => MOUSEEVENTF_MIDDLEUP,
-                    MouseButtonCode::Back => {
-                        input.Anonymous.mi.mouseData = 1;
-                        MOUSEEVENTF_XUP
-                    }
-                    MouseButtonCode::Forward => {
-                        input.Anonymous.mi.mouseData = 2;
-                        MOUSEEVENTF_XUP
-                    }
-                };
-                if let Err(e) = Self::send_win32_input(input) {
-                    if first_err.is_none() {
-                        first_err = Some(e);
+            if !self.allow_mock {
+                unsafe {
+                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                    let mut input: INPUT = std::mem::zeroed();
+                    input.r#type = INPUT_MOUSE;
+                    input.Anonymous.mi.dwFlags = match _btn {
+                        MouseButtonCode::Left => MOUSEEVENTF_LEFTUP,
+                        MouseButtonCode::Right => MOUSEEVENTF_RIGHTUP,
+                        MouseButtonCode::Middle => MOUSEEVENTF_MIDDLEUP,
+                        MouseButtonCode::Back => {
+                            input.Anonymous.mi.mouseData = 1;
+                            MOUSEEVENTF_XUP
+                        }
+                        MouseButtonCode::Forward => {
+                            input.Anonymous.mi.mouseData = 2;
+                            MOUSEEVENTF_XUP
+                        }
+                    };
+                    if let Err(e) = Self::send_win32_input(input) {
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
                     }
                 }
             }
@@ -264,15 +284,17 @@ impl WindowsInputInjectorBackend for SendInputInjector {
         let keys: Vec<u32> = self.held_keys.drain().collect();
         for _scancode in keys {
             #[cfg(target_os = "windows")]
-            unsafe {
-                use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-                let mut input: INPUT = std::mem::zeroed();
-                input.r#type = INPUT_KEYBOARD;
-                input.Anonymous.ki.wScan = (_scancode & 0xFFFF) as u16;
-                input.Anonymous.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                if let Err(e) = Self::send_win32_input(input) {
-                    if first_err.is_none() {
-                        first_err = Some(e);
+            if !self.allow_mock {
+                unsafe {
+                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+                    let mut input: INPUT = std::mem::zeroed();
+                    input.r#type = INPUT_KEYBOARD;
+                    input.Anonymous.ki.wScan = (_scancode & 0xFFFF) as u16;
+                    input.Anonymous.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+                    if let Err(e) = Self::send_win32_input(input) {
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
                     }
                 }
             }
