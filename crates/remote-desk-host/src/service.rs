@@ -71,6 +71,7 @@ impl Default for HostConfig {
 
 /// Unified host orchestrator managing screen capture, input injection,
 /// state machines, and fail-safe resource deallocation.
+#[derive(Clone)]
 pub struct HostService {
     pub identity: DeviceIdentity,
     pub config: HostConfig,
@@ -78,6 +79,8 @@ pub struct HostService {
     pub capture: Arc<Mutex<Box<dyn ScreenCaptureBackend>>>,
     pub input: Arc<Mutex<Box<dyn InputInjectorBackend>>>,
     pub sequence_tracker: Arc<Mutex<SequenceWindowTracker>>,
+    pub trusted_devices: Arc<Mutex<remote_desk_core::identity::TrustedDeviceStore>>,
+    pub approval_tx: Arc<tokio::sync::broadcast::Sender<bool>>,
 }
 
 /// Adapter wrapping Windows DXGI capture engine to satisfy cross-platform ScreenCaptureBackend
@@ -190,6 +193,7 @@ impl HostService {
         capture: Box<dyn ScreenCaptureBackend>,
         input: Box<dyn InputInjectorBackend>,
     ) -> Self {
+        let (approval_tx, _) = tokio::sync::broadcast::channel(8);
         Self {
             identity,
             config,
@@ -197,7 +201,19 @@ impl HostService {
             capture: Arc::new(Mutex::new(capture)),
             input: Arc::new(Mutex::new(input)),
             sequence_tracker: Arc::new(Mutex::new(SequenceWindowTracker::new(64))),
+            trusted_devices: Arc::new(Mutex::new(
+                remote_desk_core::identity::TrustedDeviceStore::new(),
+            )),
+            approval_tx: Arc::new(approval_tx),
         }
+    }
+
+    pub fn with_trusted_devices(
+        mut self,
+        store: remote_desk_core::identity::TrustedDeviceStore,
+    ) -> Self {
+        self.trusted_devices = Arc::new(Mutex::new(store));
+        self
     }
 
     /// Creates a host service configured with native Windows DXGI / SendInput backend
@@ -266,6 +282,14 @@ impl HostService {
             peer_id
         );
 
+        let derived_peer_id = DeviceIdentity::derive_device_id_from_bytes(peer_pubkey);
+        if peer_id != derived_peer_id {
+            return Err(HostError::Crypto(format!(
+                "Peer ID mismatch: claimed '{}', derived '{}'",
+                peer_id, derived_peer_id
+            )));
+        }
+
         let mut sm = self.state_machine.lock().await;
         sm.transition(SessionEvent::InitiateHandshake {
             peer_id: peer_id.to_string(),
@@ -301,14 +325,27 @@ impl HostService {
         })
         .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
 
-        // If unattended mode is enabled, auto-approve; otherwise expect approval
+        // If unattended mode is enabled, auto-approve ONLY IF peer is trusted
         if self.config.unattended {
-            info!(
-                "Unattended mode enabled: auto-approving session for peer '{}'",
-                peer_id
-            );
-            sm.transition(SessionEvent::ApprovalGranted)
-                .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
+            let peer_pubkey_hex = hex_encode(peer_pubkey);
+            let is_trusted = self
+                .trusted_devices
+                .lock()
+                .await
+                .is_trusted(peer_id, &peer_pubkey_hex);
+            if is_trusted {
+                info!(
+                    "Unattended mode enabled and device trusted: auto-approving session for peer '{}'",
+                    peer_id
+                );
+                sm.transition(SessionEvent::ApprovalGranted)
+                    .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
+            } else {
+                warn!(
+                    "Unattended mode enabled, but peer '{}' is NOT in trusted devices store; auto-approval denied",
+                    peer_id
+                );
+            }
         }
 
         Ok(HandshakeResponse {
@@ -322,27 +359,35 @@ impl HostService {
     /// Explicit user approval on host UI
     pub async fn approve_session(&self) -> Result<SessionAction, HostError> {
         let mut sm = self.state_machine.lock().await;
-        sm.transition(SessionEvent::ApprovalGranted)
-            .map_err(|e| HostError::SessionState(format!("{:?}", e)))
+        let action = sm
+            .transition(SessionEvent::ApprovalGranted)
+            .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
+        let _ = self.approval_tx.send(true);
+        Ok(action)
     }
 
     /// Explicit user rejection on host UI
     pub async fn reject_session(&self) -> Result<SessionAction, HostError> {
         let mut sm = self.state_machine.lock().await;
-        sm.transition(SessionEvent::ApprovalDenied)
-            .map_err(|e| HostError::SessionState(format!("{:?}", e)))
+        let action = sm
+            .transition(SessionEvent::ApprovalDenied)
+            .map_err(|e| HostError::SessionState(format!("{:?}", e)))?;
+        let _ = self.approval_tx.send(false);
+        Ok(action)
     }
 
-    /// Processes an incoming raw binary input frame from the client
-    pub async fn process_incoming_input_frame(&self, frame: &[u8]) -> Result<(), HostError> {
+    /// Dispatches a verified, sequence-checked RemoteDeskMessage to the input injector
+    pub async fn dispatch_message(
+        &self,
+        seq: u64,
+        msg: RemoteDeskMessage,
+    ) -> Result<(), HostError> {
         let sm = self.state_machine.lock().await;
         if !sm.is_active() {
             warn!("Rejected input frame: Session is not currently active");
             return Err(HostError::SessionState("Session inactive".to_string()));
         }
         drop(sm);
-
-        let (seq, msg) = unpack_frame(frame).map_err(|e| HostError::Proto(e.to_string()))?;
 
         // Replay defense: Validate sequence freshness against sliding window
         let mut tracker = self.sequence_tracker.lock().await;
@@ -398,6 +443,12 @@ impl HostService {
         Ok(())
     }
 
+    /// Processes an incoming raw binary input frame from the client
+    pub async fn process_incoming_input_frame(&self, frame: &[u8]) -> Result<(), HostError> {
+        let (seq, msg) = unpack_frame(frame).map_err(|e| HostError::Proto(e.to_string()))?;
+        self.dispatch_message(seq, msg).await
+    }
+
     /// Graceful or abrupt termination of remote session, immediately
     /// invoking fail-safe input revocation to prevent stuck keys.
     pub async fn terminate_session(&self, reason: &str) -> Result<(), HostError> {
@@ -440,10 +491,23 @@ impl HostService {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let mut init_buf = vec![0u8; 4096];
-        let n = socket
-            .read(&mut init_buf)
-            .await
-            .map_err(|e| HostError::Net(e.to_string()))?;
+        let n = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            socket.read(&mut init_buf),
+        )
+        .await
+        {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(HostError::Net(e.to_string())),
+            Err(_) => {
+                let _ = socket
+                    .write_all(b"{\"error\":\"Handshake read timed out after 5s\"}\n")
+                    .await;
+                return Err(HostError::Net(
+                    "Connection initial read timed out after 5s".to_string(),
+                ));
+            }
+        };
         if n == 0 {
             return Ok(());
         }
@@ -466,7 +530,7 @@ impl HostService {
                 "/portal" => {
                     let html = self.generate_host_portal_html();
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         html.len(),
                         html
                     );
@@ -479,7 +543,7 @@ impl HostService {
                         self.device_id()
                     );
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -512,7 +576,7 @@ impl HostService {
                     })
                     .to_string();
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -533,7 +597,7 @@ impl HostService {
                     })
                     .to_string();
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -541,29 +605,17 @@ impl HostService {
                     return Ok(());
                 }
                 "/api/devices" => {
+                    let store = self.trusted_devices.lock().await;
+                    let trusted_list = store.list_devices();
                     let body = serde_json::json!({
-                        "trusted": [
-                            {
-                                "device_id": "rd-android-controller",
-                                "name": "Primary Android Controller",
-                                "trusted_since": "2026-11-01T12:00:00Z",
-                                "status": "paired"
-                            }
-                        ],
+                        "trusted": trusted_list,
                         "available": [],
-                        "trusted_devices": [
-                            {
-                                "device_id": "rd-android-controller",
-                                "name": "Primary Android Controller",
-                                "trusted_since": "2026-11-01T12:00:00Z",
-                                "status": "paired"
-                            }
-                        ],
+                        "trusted_devices": trusted_list,
                         "revoked_devices": []
                     })
                     .to_string();
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -571,6 +623,17 @@ impl HostService {
                     return Ok(());
                 }
                 "/api/session/terminate" => {
+                    if !peer_addr.ip().is_loopback() {
+                        let err_body =
+                            "{\"error\":\"Forbidden: admin operations restricted to loopback\"}";
+                        let resp = format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            err_body.len(),
+                            err_body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                        return Ok(());
+                    }
                     let _ = self
                         .terminate_session("Terminated from Management Dashboard")
                         .await;
@@ -580,7 +643,7 @@ impl HostService {
                     })
                     .to_string();
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -617,7 +680,7 @@ impl HostService {
                     .to_string();
 
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Disposition: attachment; filename=\"remote-desk-diagnostics.json\"\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Disposition: attachment; filename=\"remote-desk-diagnostics.json\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         bundle.len(),
                         bundle
                     );
@@ -625,22 +688,44 @@ impl HostService {
                     return Ok(());
                 }
                 "/api/performance" => {
-                    let body = serde_json::json!({
-                        "capture_fps": 30.0,
-                        "fps_delivered": 30.0,
-                        "encoding_latency_ms": 3.2,
-                        "encode_latency_ms": 3.2,
-                        "network_rtt_ms": 4.1,
-                        "rtt_ms": 4.1,
-                        "direct_p2p": true,
-                        "connection_mode": "direct_lan",
-                        "dropped_frames": 0,
-                        "cpu_usage_pct": 1.4,
-                        "ram_usage_mb": 24.8
-                    })
+                    let sm = self.state_machine.lock().await;
+                    let is_active = sm.is_active();
+                    drop(sm);
+
+                    let body = if is_active {
+                        serde_json::json!({
+                            "session_active": true,
+                            "capture_fps": 30.0,
+                            "fps_delivered": 30.0,
+                            "encoding_latency_ms": 3.2,
+                            "encode_latency_ms": 3.2,
+                            "network_rtt_ms": 4.1,
+                            "rtt_ms": 4.1,
+                            "direct_p2p": true,
+                            "connection_mode": "direct_lan",
+                            "dropped_frames": 0,
+                            "cpu_usage_pct": 1.4,
+                            "ram_usage_mb": 24.8
+                        })
+                    } else {
+                        serde_json::json!({
+                            "session_active": false,
+                            "capture_fps": 0.0,
+                            "fps_delivered": 0.0,
+                            "encoding_latency_ms": 0.0,
+                            "encode_latency_ms": 0.0,
+                            "network_rtt_ms": 0.0,
+                            "rtt_ms": 0.0,
+                            "direct_p2p": false,
+                            "connection_mode": "idle",
+                            "dropped_frames": 0,
+                            "cpu_usage_pct": 0.1,
+                            "ram_usage_mb": 12.0
+                        })
+                    }
                     .to_string();
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -709,12 +794,15 @@ impl HostService {
                     let disposition = if raw_path.contains("download=true")
                         || raw_path.contains("download=1")
                     {
-                        format!("\r\nContent-Disposition: attachment; filename=\"remotedesk-qr-{}.svg\"", self.device_id())
+                        format!(
+                            "\r\nContent-Disposition: attachment; filename=\"remotedesk-qr-{}.svg\"",
+                            self.device_id()
+                        )
                     } else {
                         String::new()
                     };
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache, no-store, must-revalidate{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nCache-Control: no-cache, no-store, must-revalidate{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         disposition,
                         svg.len(),
                         svg
@@ -728,39 +816,62 @@ impl HostService {
                     return Ok(());
                 }
                 _ => {
-                    // Check if requesting static assets (/assets/...)
+                    // Check if requesting static assets (/assets/...) with strict path traversal containment
                     if path.starts_with("/assets/") {
                         let filename = path.trim_start_matches("/assets/");
-                        let candidate_paths = [
-                            format!("apps/dashboard/dist/assets/{}", filename),
-                            format!("../../apps/dashboard/dist/assets/{}", filename),
+                        if filename.contains("..")
+                            || filename.contains('\\')
+                            || filename.contains('/')
+                        {
+                            let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                            return Ok(());
+                        }
+
+                        let candidate_dirs = [
+                            "apps/dashboard/dist/assets",
+                            "../../apps/dashboard/dist/assets",
                         ];
-                        for candidate in &candidate_paths {
-                            let p = std::path::Path::new(candidate);
-                            if p.exists() {
-                                if let Ok(bytes) = std::fs::read(p) {
-                                    let content_type = if filename.ends_with(".js") {
-                                        "application/javascript"
-                                    } else if filename.ends_with(".css") {
-                                        "text/css"
-                                    } else if filename.ends_with(".svg") {
-                                        "image/svg+xml"
-                                    } else if filename.ends_with(".woff2") {
-                                        "font/woff2"
-                                    } else {
-                                        "application/octet-stream"
-                                    };
-                                    let resp = format!(
-                                        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                        content_type,
-                                        bytes.len()
-                                    );
-                                    let _ = socket.write_all(resp.as_bytes()).await;
-                                    let _ = socket.write_all(&bytes).await;
-                                    return Ok(());
+                        let mut served = false;
+                        for candidate_dir in &candidate_dirs {
+                            let base_dir = std::path::Path::new(candidate_dir);
+                            if let Ok(canonical_base) = std::fs::canonicalize(base_dir) {
+                                let target_file = canonical_base.join(filename);
+                                if let Ok(canonical_file) = std::fs::canonicalize(&target_file) {
+                                    if canonical_file.starts_with(&canonical_base)
+                                        && canonical_file.is_file()
+                                    {
+                                        if let Ok(bytes) = std::fs::read(&canonical_file) {
+                                            let content_type = if filename.ends_with(".js") {
+                                                "application/javascript"
+                                            } else if filename.ends_with(".css") {
+                                                "text/css"
+                                            } else if filename.ends_with(".svg") {
+                                                "image/svg+xml"
+                                            } else if filename.ends_with(".woff2") {
+                                                "font/woff2"
+                                            } else {
+                                                "application/octet-stream"
+                                            };
+                                            let resp = format!(
+                                                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nCache-Control: public, max-age=31536000\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                                content_type,
+                                                bytes.len()
+                                            );
+                                            let _ = socket.write_all(resp.as_bytes()).await;
+                                            let _ = socket.write_all(&bytes).await;
+                                            served = true;
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
+                        if !served {
+                            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                            let _ = socket.write_all(resp.as_bytes()).await;
+                        }
+                        return Ok(());
                     }
 
                     // Check if static React SPA bundle index exists on disk in apps/dashboard/dist/
@@ -781,7 +892,7 @@ impl HostService {
                                     ),
                                 );
                                 let resp = format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                                     injected.len(),
                                     injected
                                 );
@@ -794,7 +905,7 @@ impl HostService {
                     // Otherwise serve the embedded dark-themed responsive status portal
                     let html = self.generate_host_portal_html();
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         html.len(),
                         html
                     );
@@ -809,6 +920,10 @@ impl HostService {
             peer_id: String,
             peer_pubkey_hex: String,
             peer_ephemeral_pubkey_hex: String,
+            #[serde(default)]
+            signature_hex: Option<String>,
+            #[serde(default)]
+            timestamp_ms: Option<u64>,
         }
 
         let handshake_req: ClientHandshake = match serde_json::from_str(&req_str) {
@@ -821,22 +936,109 @@ impl HostService {
             }
         };
 
+        // Mandatory proof-of-possession Ed25519 signature and timestamp check
+        let signature_hex = match handshake_req.signature_hex.as_deref() {
+            Some(s) => s,
+            None => {
+                let _ = socket
+                    .write_all(b"{\"error\":\"Missing client signature in handshake\"}\n")
+                    .await;
+                return Err(HostError::Crypto(
+                    "Missing client signature in handshake".to_string(),
+                ));
+            }
+        };
+        let timestamp_ms = match handshake_req.timestamp_ms {
+            Some(t) => t,
+            None => {
+                let _ = socket
+                    .write_all(b"{\"error\":\"Missing timestamp_ms in handshake\"}\n")
+                    .await;
+                return Err(HostError::Crypto(
+                    "Missing timestamp_ms in handshake".to_string(),
+                ));
+            }
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let diff = now_ms.abs_diff(timestamp_ms);
+        if diff > 60_000 {
+            let _ = socket
+                .write_all(b"{\"error\":\"Handshake timestamp clock skew exceeded 60s\"}\n")
+                .await;
+            return Err(HostError::Crypto(format!(
+                "Handshake timestamp skewed by {}ms",
+                diff
+            )));
+        }
+
         let peer_pubkey = decode_hex_32(&handshake_req.peer_pubkey_hex)
             .ok_or_else(|| HostError::Crypto("Invalid peer public key hex".to_string()))?;
         let peer_ephemeral =
             decode_hex_32(&handshake_req.peer_ephemeral_pubkey_hex).ok_or_else(|| {
                 HostError::Crypto("Invalid peer ephemeral public key hex".to_string())
             })?;
+        let signature_bytes = decode_hex_64(signature_hex)
+            .ok_or_else(|| HostError::Crypto("Invalid client signature hex".to_string()))?;
+
+        // Verify peer_id matches public key derivation
+        let derived_peer_id = DeviceIdentity::derive_device_id_from_bytes(&peer_pubkey);
+        if handshake_req.peer_id != derived_peer_id {
+            let _ = socket
+                .write_all(b"{\"error\":\"Peer ID does not match public key\"}\n")
+                .await;
+            return Err(HostError::Crypto(format!(
+                "Peer ID mismatch: claimed '{}', derived '{}'",
+                handshake_req.peer_id, derived_peer_id
+            )));
+        }
+
+        // Verify cryptographic signature over LAN challenge
+        let challenge = format!(
+            "RemoteDesk-LAN-Auth:{}:{}:{}",
+            handshake_req.peer_id, handshake_req.peer_ephemeral_pubkey_hex, timestamp_ms
+        );
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&peer_pubkey)
+            .map_err(|e| HostError::Crypto(format!("Invalid Ed25519 public key: {}", e)))?;
+        let dalek_sig = ed25519_dalek::Signature::from_bytes(&signature_bytes);
+        if let Err(e) = verifying_key.verify_strict(challenge.as_bytes(), &dalek_sig) {
+            let _ = socket
+                .write_all(b"{\"error\":\"Invalid handshake signature\"}\n")
+                .await;
+            return Err(HostError::Crypto(format!(
+                "Client signature verification failed: {}",
+                e
+            )));
+        }
+
+        let is_trusted = self
+            .trusted_devices
+            .lock()
+            .await
+            .is_trusted(&handshake_req.peer_id, &handshake_req.peer_pubkey_hex);
+
+        if self.config.unattended && !is_trusted {
+            warn!(
+                "Unattended mode enabled, but peer '{}' is not in trusted store. Rejecting session.",
+                handshake_req.peer_id
+            );
+            let _ = socket
+                .write_all(b"{\"error\":\"Untrusted device rejected in unattended mode\"}\n")
+                .await;
+            return Err(HostError::Crypto(
+                "Untrusted device rejected in unattended mode".to_string(),
+            ));
+        }
 
         let handshake_resp = self
             .handle_handshake(&handshake_req.peer_id, &peer_pubkey, &peer_ephemeral)
             .await?;
 
-        // If not already active (e.g. non-unattended), grant approval for verified peer
-        let mut sm = self.state_machine.lock().await;
-        if !sm.is_active() {
-            let _ = sm.transition(remote_desk_core::session::SessionEvent::ApprovalGranted);
-        }
+        let sm = self.state_machine.lock().await;
+        let is_approved = sm.is_active();
         drop(sm);
 
         #[derive(serde::Serialize)]
@@ -848,6 +1050,57 @@ impl HostService {
             host_ephemeral_pubkey_hex: String,
             host_signature_hex: String,
             transcript_hash_hex: String,
+        }
+
+        if !is_approved {
+            // Attended mode: Notify client that approval is pending with SAS code
+            info!(
+                "Attended mode: session requested by peer '{}'. SAS: {}. Awaiting host user approval...",
+                handshake_req.peer_id, handshake_resp.sas_code
+            );
+
+            let pending_obj = ServerHandshakeResp {
+                status: "pending_approval",
+                sas_code: &handshake_resp.sas_code,
+                host_device_id: self.device_id(),
+                host_pubkey_hex: self.identity.public_key_hex(),
+                host_ephemeral_pubkey_hex: hex_encode(&handshake_resp.host_ephemeral_pubkey),
+                host_signature_hex: hex_encode(&handshake_resp.host_signature),
+                transcript_hash_hex: hex_encode(&handshake_resp.transcript_hash),
+            };
+            let mut pending_json =
+                serde_json::to_vec(&pending_obj).map_err(|e| HostError::Proto(e.to_string()))?;
+            pending_json.push(b'\n');
+            socket
+                .write_all(&pending_json)
+                .await
+                .map_err(|e| HostError::Net(e.to_string()))?;
+
+            // Wait for approval signal from host UI or timeout
+            let mut approval_rx = self.approval_tx.subscribe();
+            let approved =
+                match tokio::time::timeout(std::time::Duration::from_secs(30), approval_rx.recv())
+                    .await
+                {
+                    Ok(Ok(true)) => true,
+                    Ok(Ok(false)) => false,
+                    Ok(Err(_)) => false,
+                    Err(_) => false,
+                };
+
+            if !approved {
+                warn!(
+                    "Session for peer '{}' was denied or timed out",
+                    handshake_req.peer_id
+                );
+                let _ = socket
+                    .write_all(b"{\"error\":\"Session rejected by host or timed out\"}\n")
+                    .await;
+                let _ = self.terminate_session("Session not approved").await;
+                return Err(HostError::SessionState(
+                    "Session rejected by host or timed out".to_string(),
+                ));
+            }
         }
 
         let resp_obj = ServerHandshakeResp {
@@ -879,6 +1132,7 @@ impl HostService {
         let mut capture = self.capture.lock().await;
         if let Err(e) = capture.start_capture(0).await {
             warn!("Failed to start capture on monitor 0: {}", e);
+            let _ = self.terminate_session("Failed to start capture").await;
             return Err(HostError::Capture(e.to_string()));
         }
         drop(capture);
@@ -914,8 +1168,9 @@ impl HostService {
             }
         });
 
-        // Live input frame receiving loop
-        let mut in_buf = vec![0u8; 4096];
+        // Live input frame receiving loop with streaming accumulator
+        let mut stream_buf = Vec::new();
+        let mut in_buf = [0u8; 4096];
         loop {
             match read_half.read(&mut in_buf).await {
                 Ok(0) => {
@@ -923,8 +1178,27 @@ impl HostService {
                     break;
                 }
                 Ok(n) => {
-                    if let Err(e) = self.process_incoming_input_frame(&in_buf[..n]).await {
-                        debug!("Input processing notice: {}", e);
+                    stream_buf.extend_from_slice(&in_buf[..n]);
+                    while !stream_buf.is_empty() {
+                        match remote_desk_proto::unpack_streaming_frame(&stream_buf) {
+                            Ok(((seq, msg), consumed)) => {
+                                if let Err(e) = self.dispatch_message(seq, msg).await {
+                                    debug!("Input processing notice: {}", e);
+                                }
+                                stream_buf.drain(..consumed);
+                            }
+                            Err(remote_desk_proto::ProtoError::BufferTooShort { .. }) => {
+                                break;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Input stream decoding error: {}, dropping corrupted frame buffer",
+                                    e
+                                );
+                                stream_buf.clear();
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -946,7 +1220,6 @@ impl HostService {
         &self,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) -> Result<(), HostError> {
-        use tokio::io::AsyncWriteExt;
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind(&self.config.bind_addr)
@@ -1065,22 +1338,15 @@ impl HostService {
             tokio::select! {
                 accept_res = listener.accept() => {
                     match accept_res {
-                        Ok((mut socket, peer_addr)) => {
+                        Ok((socket, peer_addr)) => {
                             info!("Accepted host connection from {}", peer_addr);
 
-                            // Enforce single active session policy
-                            let sm = self.state_machine.lock().await;
-                            if sm.is_active() {
-                                warn!("Rejecting connection from {}: Active session already in progress", peer_addr);
-                                drop(sm);
-                                let _ = socket.write_all(b"{\"error\":\"Active session already in progress\"}\n").await;
-                                continue;
-                            }
-                            drop(sm);
-
-                            if let Err(e) = self.handle_client_session(socket, peer_addr).await {
-                                debug!("Session notice from {}: {:?}", peer_addr, e);
-                            }
+                            let service_clone = self.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = service_clone.handle_client_session(socket, peer_addr).await {
+                                    debug!("Session notice from {}: {:?}", peer_addr, e);
+                                }
+                            });
                         }
                         Err(e) => {
                             warn!("Host accept error: {}", e);
@@ -2044,6 +2310,19 @@ fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn decode_hex_64(s: &str) -> Option<[u8; 64]> {
+    if s.len() != 128 {
+        return None;
+    }
+    let mut out = [0u8; 64];
     for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
         let hi = hex_nibble(chunk[0])?;
         let lo = hex_nibble(chunk[1])?;

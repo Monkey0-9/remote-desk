@@ -22,9 +22,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut health_check_only = false;
     let mut duration_ms: Option<u64> = None;
     let mut backend_choice = "auto".to_string();
-    let mut _display: Option<String> = None;
+    let mut display_target: Option<String> = None;
     let mut _session_portal = false;
     let mut custom_key_path: Option<PathBuf> = None;
+    let mut custom_trusted_path: Option<PathBuf> = None;
 
     // Lightweight argument parsing without external CLI dependencies
     let args: Vec<String> = env::args().collect();
@@ -64,9 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--trusted-devices" => {
+                if i + 1 < args.len() {
+                    custom_trusted_path = Some(PathBuf::from(&args[i + 1]));
+                    i += 1;
+                }
+            }
             "--display" => {
                 if i + 1 < args.len() {
-                    _display = Some(args[i + 1].clone());
+                    display_target = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -151,11 +158,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     };
 
+    let default_trusted_path = {
+        let home = env::var("HOME")
+            .or_else(|_| env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home)
+            .join(".config")
+            .join("remote-desk")
+            .join("trusted_devices.json")
+    };
+    let trusted_path = custom_trusted_path.unwrap_or(default_trusted_path);
+    let trusted_store =
+        match remote_desk_core::identity::TrustedDeviceStore::load_from_file(&trusted_path) {
+            Ok(s) => {
+                info!(
+                    "Trusted device store loaded ({} paired device(s)) from [{}]",
+                    s.list_devices().len(),
+                    trusted_path.display()
+                );
+                s
+            }
+            Err(e) => {
+                info!(
+                    "No existing trusted device store at [{}]: {}",
+                    trusted_path.display(),
+                    e
+                );
+                remote_desk_core::identity::TrustedDeviceStore::new()
+            }
+        };
+    let host = host.with_trusted_devices(trusted_store);
+
     info!(
         "Host identity initialized: Device ID [{}]",
         host.device_id()
     );
     info!("Backend Driver:  '{}'", backend_choice);
+    if let Some(target) = display_target {
+        info!("Target Display:  '{}'", target);
+    }
     info!("Host Name:       '{}'", config.device_name);
     info!("Unattended Mode: {}", config.unattended);
     info!("Bind Address:    '{}' (Listening Socket)", config.bind_addr);

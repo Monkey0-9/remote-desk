@@ -51,16 +51,38 @@ async fn test_e2e_lan_session_handshake_streaming_input_and_cleanup() {
 
     // 1. Perform Handshake
     let client_id = DeviceIdentity::generate();
+    host_arc.trusted_devices.lock().await.trust_device(
+        client_id.device_id(),
+        client_id.public_key_hex(),
+        "Trusted Test Client".to_string(),
+        0,
+    );
+
     let client_exchange = EphemeralKeyExchange::new();
+    let eph_hex = hex_encode(&client_exchange.public_key_bytes());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let challenge = format!(
+        "RemoteDesk-LAN-Auth:{}:{}:{}",
+        client_id.device_id(),
+        eph_hex,
+        now_ms
+    );
+    let signature = client_id.sign(challenge.as_bytes());
+    let sig_hex = hex_encode(&signature);
 
     let handshake_json = serde_json::json!({
         "peer_id": client_id.device_id(),
         "peer_pubkey_hex": client_id.public_key_hex(),
-        "peer_ephemeral_pubkey_hex": hex_encode(&client_exchange.public_key_bytes()),
+        "peer_ephemeral_pubkey_hex": eph_hex,
+        "signature_hex": sig_hex,
+        "timestamp_ms": now_ms,
     });
 
     client_stream
-        .write_all(handshake_json.to_string().as_bytes())
+        .write_all(format!("{}\n", handshake_json).as_bytes())
         .await
         .expect("write handshake");
 

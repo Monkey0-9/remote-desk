@@ -59,10 +59,18 @@ async fn test_host_unattended_mode_auto_approval() {
 
     let host = HostService::new_mock(host_identity, config);
 
+    // Register client in trusted devices store for unattended auto-approval
+    host.trusted_devices.lock().await.trust_device(
+        client_identity.device_id(),
+        client_identity.public_key_hex(),
+        "Trusted Controller".to_string(),
+        0,
+    );
+
     let client_exchange = EphemeralKeyExchange::new();
     let client_ephemeral_pub = client_exchange.public_key_bytes();
 
-    // Handshake should directly activate session in unattended mode
+    // Handshake should directly activate session in unattended mode for trusted device
     let _sas = host
         .handle_handshake(
             &client_identity.device_id(),
@@ -73,7 +81,42 @@ async fn test_host_unattended_mode_auto_approval() {
         .unwrap();
 
     let sm = host.state_machine.lock().await;
-    assert!(sm.is_active(), "Session must be active in unattended mode");
+    assert!(
+        sm.is_active(),
+        "Session must be active in unattended mode for trusted peer"
+    );
+}
+
+#[tokio::test]
+async fn test_host_unattended_mode_untrusted_peer_denied_auto_approval() {
+    let host_identity = DeviceIdentity::generate();
+    let client_identity = DeviceIdentity::generate();
+
+    let config = HostConfig {
+        unattended: true,
+        ..Default::default()
+    };
+
+    let host = HostService::new_mock(host_identity, config);
+    // Peer is NOT added to trusted_devices
+
+    let client_exchange = EphemeralKeyExchange::new();
+    let client_ephemeral_pub = client_exchange.public_key_bytes();
+
+    let _sas = host
+        .handle_handshake(
+            &client_identity.device_id(),
+            &client_identity.public_key_bytes(),
+            &client_ephemeral_pub,
+        )
+        .await
+        .unwrap();
+
+    let sm = host.state_machine.lock().await;
+    assert!(
+        !sm.is_active(),
+        "Untrusted peer MUST NOT be auto-approved even if unattended mode is set"
+    );
 }
 
 #[tokio::test]
@@ -87,6 +130,14 @@ async fn test_host_input_processing_and_failsafe_revocation() {
     };
 
     let host = HostService::new_mock(host_identity, config);
+
+    // Trust client device
+    host.trusted_devices.lock().await.trust_device(
+        client_identity.device_id(),
+        client_identity.public_key_hex(),
+        "Trusted Controller".to_string(),
+        0,
+    );
 
     // Establish active session
     let client_exchange = EphemeralKeyExchange::new();
@@ -164,13 +215,24 @@ async fn test_host_windows_backend_instantiation_and_capture_pipeline() {
     assert!(!monitors.is_empty());
     assert_eq!(monitors[0].id, 0);
 
-    // Verify Windows capture backend starts and delivers frame through adapter
+    // Verify Windows capture backend fail-closed or capture behavior
     {
         let mut capture = host.capture.lock().await;
         capture.start_capture(monitors[0].id).await.unwrap();
-        let frame = capture.next_frame().await.unwrap();
-        assert!(frame.width > 0);
-        assert!(frame.height > 0);
+        #[cfg(target_os = "windows")]
+        {
+            let frame = capture.next_frame().await.unwrap();
+            assert!(frame.width > 0);
+            assert!(frame.height > 0);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let res = capture.next_frame().await;
+            assert!(
+                res.is_err(),
+                "Non-windows host must fail closed without mock fallback"
+            );
+        }
         capture.stop_capture().await.unwrap();
     }
 }
@@ -355,6 +417,354 @@ async fn test_host_http_web_portal_and_status_endpoints() {
         assert!(resp.contains("<svg"));
         assert!(resp.contains("</svg>"));
     }
+
+    let _ = shutdown_tx.send(());
+    let _ = daemon_task.await;
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX_CHARS[(b >> 4) as usize] as char);
+        s.push(HEX_CHARS[(b & 0x0F) as usize] as char);
+    }
+    s
+}
+
+#[tokio::test]
+async fn test_unauthenticated_lan_handshake_rejected() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let port = 20001;
+    let bind_addr = format!("127.0.0.1:{}", port);
+    let identity = DeviceIdentity::generate();
+    let config = HostConfig {
+        bind_addr: bind_addr.clone(),
+        device_name: "Security-Test-Host".to_string(),
+        unattended: false,
+        signal_server_url: None,
+        turn_servers: vec![],
+    };
+
+    let host = HostService::new_mock(identity, config);
+    let host_daemon = std::sync::Arc::new(host);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let daemon_task = tokio::spawn(async move {
+        let _ = host_daemon.run_daemon(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client_id = DeviceIdentity::generate();
+    let client_exchange = EphemeralKeyExchange::new();
+    let eph_hex = hex_encode(&client_exchange.public_key_bytes());
+
+    // 1. Handshake with NO signature must be rejected immediately
+    {
+        let mut stream = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        let payload = serde_json::json!({
+            "peer_id": client_id.device_id(),
+            "peer_pubkey_hex": client_id.public_key_hex(),
+            "peer_ephemeral_pubkey_hex": eph_hex,
+        });
+        stream
+            .write_all(format!("{}\n", payload).as_bytes())
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            resp.contains("error"),
+            "Missing signature must return error: {}",
+            resp
+        );
+    }
+
+    // 2. Handshake with invalid/forged signature must be rejected immediately
+    {
+        let mut stream = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let fake_sig_hex = "00".repeat(64);
+        let payload = serde_json::json!({
+            "peer_id": client_id.device_id(),
+            "peer_pubkey_hex": client_id.public_key_hex(),
+            "peer_ephemeral_pubkey_hex": eph_hex,
+            "signature_hex": fake_sig_hex,
+            "timestamp_ms": now_ms,
+        });
+        stream
+            .write_all(format!("{}\n", payload).as_bytes())
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            resp.contains("error"),
+            "Invalid signature must return error: {}",
+            resp
+        );
+    }
+
+    // 3. Handshake with mismatched peer_id vs public key must be rejected
+    {
+        let mut stream = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let challenge = format!("RemoteDesk-LAN-Auth:rd-9999-9999:{}:{}", eph_hex, now_ms);
+        let sig = client_id.sign(challenge.as_bytes());
+        let payload = serde_json::json!({
+            "peer_id": "rd-9999-9999", // Spoofed ID
+            "peer_pubkey_hex": client_id.public_key_hex(),
+            "peer_ephemeral_pubkey_hex": eph_hex,
+            "signature_hex": hex_encode(&sig),
+            "timestamp_ms": now_ms,
+        });
+        stream
+            .write_all(format!("{}\n", payload).as_bytes())
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            resp.contains("error"),
+            "Spoofed peer_id must return error: {}",
+            resp
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    let _ = daemon_task.await;
+}
+
+#[tokio::test]
+async fn test_security_path_traversal_on_assets_forbidden() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let port = 20002;
+    let bind_addr = format!("127.0.0.1:{}", port);
+    let identity = DeviceIdentity::generate();
+    let host = HostService::new_mock(
+        identity,
+        HostConfig {
+            bind_addr: bind_addr.clone(),
+            ..Default::default()
+        },
+    );
+    let host_daemon = std::sync::Arc::new(host);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let daemon_task = tokio::spawn(async move {
+        let _ = host_daemon.run_daemon(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Test directory traversal attempt
+    let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+    client
+        .write_all(b"GET /assets/../../Cargo.toml HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut resp_buf = Vec::new();
+    client.read_to_end(&mut resp_buf).await.unwrap();
+    let resp = String::from_utf8_lossy(&resp_buf);
+
+    assert!(
+        resp.starts_with("HTTP/1.1 403 Forbidden") || resp.starts_with("HTTP/1.1 404 Not Found"),
+        "Path traversal must be forbidden, got: {}",
+        resp
+    );
+    assert!(
+        !resp.contains("[workspace]"),
+        "Cargo.toml contents must never be leaked"
+    );
+
+    let _ = shutdown_tx.send(());
+    let _ = daemon_task.await;
+}
+
+#[tokio::test]
+async fn test_security_no_wildcard_cors_on_management_endpoints() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let port = 20003;
+    let bind_addr = format!("127.0.0.1:{}", port);
+    let identity = DeviceIdentity::generate();
+    let host = HostService::new_mock(
+        identity,
+        HostConfig {
+            bind_addr: bind_addr.clone(),
+            ..Default::default()
+        },
+    );
+    let host_daemon = std::sync::Arc::new(host);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let daemon_task = tokio::spawn(async move {
+        let _ = host_daemon.run_daemon(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let endpoints = [
+        "/api/overview",
+        "/api/devices",
+        "/api/info",
+        "/health",
+        "/portal",
+    ];
+    for ep in &endpoints {
+        let mut client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+        client
+            .write_all(format!("GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", ep).as_bytes())
+            .await
+            .unwrap();
+
+        let mut resp_buf = Vec::new();
+        client.read_to_end(&mut resp_buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp_buf);
+
+        assert!(
+            !resp.contains("Access-Control-Allow-Origin: *"),
+            "Endpoint {} must not return wildcard CORS header! Got: {}",
+            ep,
+            resp
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    let _ = daemon_task.await;
+}
+
+#[tokio::test]
+async fn test_slow_client_does_not_block_accept_loop() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let port = 20004;
+    let bind_addr = format!("127.0.0.1:{}", port);
+    let identity = DeviceIdentity::generate();
+    let host = HostService::new_mock(
+        identity,
+        HostConfig {
+            bind_addr: bind_addr.clone(),
+            ..Default::default()
+        },
+    );
+    let host_daemon = std::sync::Arc::new(host);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let daemon_task = tokio::spawn(async move {
+        let _ = host_daemon.run_daemon(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Connect client 1 and do NOT send any data (hanging socket)
+    let _slow_client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+
+    // Client 2 connects immediately and requests /health
+    let mut fast_client = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+    fast_client
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut resp_buf = Vec::new();
+    fast_client.read_to_end(&mut resp_buf).await.unwrap();
+    let resp = String::from_utf8_lossy(&resp_buf);
+
+    assert!(
+        resp.starts_with("HTTP/1.1 200 OK"),
+        "Slow client must not block fast client!"
+    );
+    assert!(resp.contains("\"status\":\"ok\""));
+
+    let _ = shutdown_tx.send(());
+    let _ = daemon_task.await;
+}
+
+#[tokio::test]
+async fn test_attended_mode_approval_and_rejection_flow() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let port = 20005;
+    let bind_addr = format!("127.0.0.1:{}", port);
+    let identity = DeviceIdentity::generate();
+    let config = HostConfig {
+        bind_addr: bind_addr.clone(),
+        device_name: "Attended-Test-Host".to_string(),
+        unattended: false, // attended mode: requires manual approval
+        signal_server_url: None,
+        turn_servers: vec![],
+    };
+
+    let host = HostService::new_mock(identity, config);
+    let host_daemon = std::sync::Arc::new(host);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let host_clone = host_daemon.clone();
+    let daemon_task = tokio::spawn(async move {
+        let _ = host_clone.run_daemon(shutdown_rx).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client_id = DeviceIdentity::generate();
+    let client_exchange = EphemeralKeyExchange::new();
+    let eph_hex = hex_encode(&client_exchange.public_key_bytes());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let challenge = format!(
+        "RemoteDesk-LAN-Auth:{}:{}:{}",
+        client_id.device_id(),
+        eph_hex,
+        now_ms
+    );
+    let signature = client_id.sign(challenge.as_bytes());
+
+    let mut stream = tokio::net::TcpStream::connect(&bind_addr).await.unwrap();
+    let payload = serde_json::json!({
+        "peer_id": client_id.device_id(),
+        "peer_pubkey_hex": client_id.public_key_hex(),
+        "peer_ephemeral_pubkey_hex": eph_hex,
+        "signature_hex": hex_encode(&signature),
+        "timestamp_ms": now_ms,
+    });
+    stream
+        .write_all(format!("{}\n", payload).as_bytes())
+        .await
+        .unwrap();
+
+    // 1. Should receive "pending_approval" status
+    let mut resp_buf = vec![0u8; 1024];
+    let n = stream.read(&mut resp_buf).await.unwrap();
+    let resp = String::from_utf8_lossy(&resp_buf[..n]);
+    assert!(resp.contains("\"status\":\"pending_approval\""));
+    assert!(resp.contains("\"sas_code\":"));
+
+    // 2. User approves session
+    host_daemon.approve_session().await.unwrap();
+
+    // 3. Should receive "approved" status
+    let n2 = stream.read(&mut resp_buf).await.unwrap();
+    let resp2 = String::from_utf8_lossy(&resp_buf[..n2]);
+    assert!(resp2.contains("\"status\":\"approved\""));
 
     let _ = shutdown_tx.send(());
     let _ = daemon_task.await;

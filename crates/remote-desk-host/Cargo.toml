@@ -16,6 +16,7 @@ remote-desk-linux = { path = "../remote-desk-linux" }
 remote-desk-windows = { path = "../remote-desk-windows" }
 remote-desk-net = { path = "../remote-desk-net" }
 remote-desk-signal = { path = "../remote-desk-signal" }
+ed25519-dalek = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = "0.23"
 futures-util = "0.3"
